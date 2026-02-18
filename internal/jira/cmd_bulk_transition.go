@@ -199,7 +199,7 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 			r := output.Receipt{OK: false, Message: fmt.Sprintf("%s: %v", key, opErr)}
 			item["receipt"] = r.Format()
 			if mode != "json" && !quiet && mode != "summary" {
-				fmt.Fprintln(cmd.ErrOrStderr(), r.Format())
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), r.Format())
 			}
 			failures = append(failures, failureEntry{key: key, err: opErr.Error()})
 		}

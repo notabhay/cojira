@@ -68,7 +68,7 @@ func LoadIfPresent(paths []string) string {
 			if _, exists := os.LookupEnv(key); exists {
 				continue
 			}
-			os.Setenv(key, value)
+			_ = os.Setenv(key, value)
 		}
 		return p
 	}

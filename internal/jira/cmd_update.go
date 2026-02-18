@@ -80,7 +80,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 				nil, nil, []any{errObj}, "", "", "", &ec,
 			))
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", msg)
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", msg)
 		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: msg, ExitCode: 2}
 	}
 
@@ -141,7 +141,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 				nil, nil, []any{errObj}, "", "", "", &ec,
 			))
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\nHint: %s\n", msg, hint)
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\nHint: %s\n", msg, hint)
 		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: msg, ExitCode: 2}
 	}
 
@@ -269,7 +269,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 					nil, nil, "", "", "", nil,
 				))
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "Skipped (idempotency key already used): %s\n", idemKey)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Skipped (idempotency key already used): %s\n", idemKey)
 			return nil
 		}
 	}

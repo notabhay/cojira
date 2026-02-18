@@ -138,7 +138,7 @@ func TestDescribeJSONIsValidJSON(t *testing.T) {
 	root.SetArgs([]string{"describe", "--output-mode", "json"})
 	err := root.Execute()
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = origStdout
 
 	require.NoError(t, err)

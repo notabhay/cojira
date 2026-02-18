@@ -125,7 +125,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 					nil, nil, "", "", "", nil,
 				))
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "Skipped batch (idempotency key already used): %s\n", idemKey)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Skipped batch (idempotency key already used): %s\n", idemKey)
 			return nil
 		}
 	}
@@ -246,7 +246,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 			r := output.Receipt{OK: false, Message: fmt.Sprintf("%s: %v", stringOr(desc, opType), opErr)}
 			item["receipt"] = r.Format()
 			if mode != "json" && !quiet && mode != "summary" {
-				fmt.Fprintln(cmd.ErrOrStderr(), r.Format())
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), r.Format())
 			}
 			failureCount++
 			failures = append(failures, failureEntry{key: stringOr(desc, opType), err: opErr.Error()})

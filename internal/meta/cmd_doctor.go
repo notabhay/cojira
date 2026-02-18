@@ -222,7 +222,7 @@ func runFix(jsonOut bool) map[string]any {
 	written := appendEnvValues(envPath, values, existing)
 
 	for _, key := range written {
-		os.Setenv(key, values[key])
+		_ = os.Setenv(key, values[key])
 	}
 
 	if len(written) > 0 && !jsonOut {
@@ -284,7 +284,7 @@ func appendEnvValues(path string, values map[string]string, existing map[string]
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	if existingContent != "" && !strings.HasSuffix(existingContent, "\n") {
 		_, _ = f.WriteString("\n")
@@ -292,7 +292,7 @@ func appendEnvValues(path string, values map[string]string, existing map[string]
 	for _, key := range toAdd {
 		escaped := strings.ReplaceAll(values[key], `\`, `\\`)
 		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-		_, _ = f.WriteString(fmt.Sprintf("%s=\"%s\"\n", key, escaped))
+		_, _ = fmt.Fprintf(f, "%s=\"%s\"\n", key, escaped)
 	}
 	return toAdd
 }

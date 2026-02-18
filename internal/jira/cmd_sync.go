@@ -188,7 +188,7 @@ func runSync(cmd *cobra.Command, _ []string) error {
 		if fetchErr != nil {
 			failureCount++
 			if mode != "json" && !quiet {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Failed to fetch %s: %v\n", key, fetchErr)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Failed to fetch %s: %v\n", key, fetchErr)
 			}
 			failureDetails = append(failureDetails, failureEntry{key: key, err: fetchErr.Error()})
 		}

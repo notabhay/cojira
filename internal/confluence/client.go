@@ -194,13 +194,14 @@ func (c *Client) requestWithURL(method, requestURL string, body []byte, params u
 		status := resp.StatusCode
 		code := cerrors.HTTPError
 		hint := ""
-		if status == 401 {
+		switch status {
+		case 401:
 			code = cerrors.HTTP401
 			hint = cerrors.HintPermission()
-		} else if status == 403 {
+		case 403:
 			code = cerrors.HTTP403
 			hint = cerrors.HintPermission()
-		} else if status == 429 {
+		case 429:
 			code = cerrors.HTTP429
 			hint = cerrors.HintRateLimit()
 		}
@@ -235,7 +236,7 @@ func (c *Client) GetPageByID(pageID string, expand string) (map[string]any, erro
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 
@@ -248,7 +249,7 @@ func (c *Client) GetPageByTitle(spaceKey, title string) (map[string]any, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var data map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -276,7 +277,7 @@ func (c *Client) UpdatePage(pageID string, payload map[string]any) (map[string]a
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 
@@ -290,7 +291,7 @@ func (c *Client) CreatePage(payload map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 
@@ -305,7 +306,7 @@ func (c *Client) SetPageLabel(pageID, label string) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -329,10 +330,10 @@ func (c *Client) GetChildren(pageID string, limit int) ([]map[string]any, error)
 
 		var data map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, err
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		results, ok := data["results"].([]any)
 		if !ok || len(results) == 0 {
@@ -364,7 +365,7 @@ func (c *Client) CQL(cql string, limit, start int) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 
@@ -374,7 +375,7 @@ func (c *Client) GetCurrentUser() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 
@@ -387,7 +388,7 @@ func (c *Client) ListSpaces(limit, start int) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 

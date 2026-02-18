@@ -175,7 +175,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	// Clear and reload env.
 	for _, key := range []string{"CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN",
 		"JIRA_BASE_URL", "JIRA_API_TOKEN", "JIRA_EMAIL"} {
-		os.Unsetenv(key)
+		_ = os.Unsetenv(key)
 	}
 	dotenv.LoadIfPresent([]string{outPath})
 
@@ -304,7 +304,7 @@ var probeJiraURL = func(baseURL string, timeout float64) string {
 		if err != nil {
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode < 500 && resp.StatusCode != 404 {
 			return candidate
 		}
@@ -434,7 +434,7 @@ func writeCojiraJSONStub(directory string, jiraInput string, confluenceInput str
 // isAlphaNumDash returns true if s contains only alphanumeric chars and dashes.
 func isAlphaNumDash(s string) bool {
 	for _, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
 			return false
 		}
 	}

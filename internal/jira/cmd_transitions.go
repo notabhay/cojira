@@ -78,7 +78,7 @@ func runTransitions(cmd *cobra.Command, args []string) error {
 				fmt.Printf("No transition to status %q found for %s.\n", toFlag, issueID)
 				return &cerrors.CojiraError{Code: cerrors.TransitionNotFound, ExitCode: 1}
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "No transitions to status '%s' found for %s\n", toFlag, issueID)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "No transitions to status '%s' found for %s\n", toFlag, issueID)
 			return &cerrors.CojiraError{Code: cerrors.TransitionNotFound, ExitCode: 1}
 		}
 
@@ -106,7 +106,7 @@ func runTransitions(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		if len(matches) > 1 {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Multiple transitions found for status '%s', using the first match.\n", toFlag)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Multiple transitions found for status '%s', using the first match.\n", toFlag)
 		}
 		first := matches[0].(map[string]any)
 		fmt.Println(first["id"])

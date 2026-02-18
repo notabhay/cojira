@@ -55,7 +55,7 @@ func ghGetDetailViewFieldConfig(client *jira.Client, boardID string) (map[string
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var data map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, &cerrors.CojiraError{
@@ -590,7 +590,7 @@ func executeDetailViewApply(client *jira.Client, cmd *cobra.Command, boardID str
 			if err != nil {
 				return err
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			sleepIfNeeded(cmd)
 		}
 	}
@@ -611,7 +611,7 @@ func executeDetailViewApply(client *jira.Client, cmd *cobra.Command, boardID str
 		}
 		var data map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&data)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if data == nil || data["id"] == nil {
 			return &cerrors.CojiraError{
 				Code:     cerrors.CreateFailed,

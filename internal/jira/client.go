@@ -215,13 +215,14 @@ func (c *Client) handleResponse(resp *http.Response, method, path string) (*http
 		status := resp.StatusCode
 		code := cerrors.HTTPError
 		hint := ""
-		if status == 401 {
+		switch status {
+		case 401:
 			code = cerrors.HTTP401
 			hint = cerrors.HintPermission()
-		} else if status == 403 {
+		case 403:
 			code = cerrors.HTTP403
 			hint = cerrors.HintPermission()
-		} else if status == 429 {
+		case 429:
 			code = cerrors.HTTP429
 			hint = cerrors.HintRateLimit()
 		}
@@ -311,7 +312,7 @@ func (c *Client) GetIssue(issue string, fields string, expand string) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 
@@ -331,7 +332,7 @@ func (c *Client) Search(jql string, limit, startAt int, fields string, expand st
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 
@@ -351,7 +352,7 @@ func (c *Client) GetBoardIssues(boardID string, jql string, limit, startAt int, 
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 
@@ -367,7 +368,7 @@ func (c *Client) UpdateIssue(issue string, payload map[string]any, notifyUsers b
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -383,7 +384,7 @@ func (c *Client) TransitionIssue(issue string, payload map[string]any, notifyUse
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -393,7 +394,7 @@ func (c *Client) ListTransitions(issue string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 
@@ -407,7 +408,7 @@ func (c *Client) CreateIssue(payload map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 
@@ -417,7 +418,7 @@ func (c *Client) ListFields() ([]map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var result []map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
@@ -431,7 +432,7 @@ func (c *Client) GetMyself() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
 }
 

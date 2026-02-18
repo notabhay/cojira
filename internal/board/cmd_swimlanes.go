@@ -111,7 +111,7 @@ func ghGetEditmodel(client *jira.Client, boardID string) (map[string]any, error)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var data map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, &cerrors.CojiraError{
@@ -143,7 +143,7 @@ func ghRequestJSON(client *jira.Client, method, u string, payload any) (map[stri
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var data map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return nil, err
@@ -164,7 +164,7 @@ func ghRequestNoBody(client *jira.Client, method, u string, payload any) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -647,7 +647,7 @@ func executeSwimlanesApply(client *jira.Client, cmd *cobra.Command, boardID stri
 		if err != nil {
 			return err
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		sleepIfNeeded(cmd)
 	}
 
@@ -1149,7 +1149,7 @@ func newSwimlanesDeleteCmd(clientFn func(cmd *cobra.Command) (*jira.Client, erro
 			if err != nil {
 				return err
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			if mode == "json" {
 				result := map[string]any{"deleted": true}

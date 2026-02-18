@@ -124,7 +124,7 @@ func TestFixWithoutInteractiveJSONExits3(t *testing.T) {
 	cmd.SetArgs([]string{"--fix", "--output-mode", "json"})
 	err = cmd.Execute()
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = origStdout
 
 	assert.Error(t, err)

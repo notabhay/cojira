@@ -23,7 +23,7 @@ func TestEnvelopeRequiredFields(t *testing.T) {
 }
 
 func TestEnvelopeModeDefault(t *testing.T) {
-	os.Unsetenv("COJIRA_OUTPUT_MODE")
+	_ = os.Unsetenv("COJIRA_OUTPUT_MODE")
 	SetMode("")
 	data := BuildEnvelope(true, "jira", "info", nil, map[string]any{}, nil, nil, "", "", "", nil)
 	assert.Equal(t, "human", data["mode"])
@@ -68,8 +68,8 @@ func TestEnvelopeExitCodeExplicit(t *testing.T) {
 // --- PrintJSON tests ---
 
 func TestPrintJSONOutput(t *testing.T) {
-	os.Setenv("COJIRA_OUTPUT_MODE", "json")
-	defer os.Unsetenv("COJIRA_OUTPUT_MODE")
+	_ = os.Setenv("COJIRA_OUTPUT_MODE", "json")
+	defer func() { _ = os.Unsetenv("COJIRA_OUTPUT_MODE") }()
 	SetMode("")
 
 	data := BuildEnvelope(
@@ -93,7 +93,7 @@ func TestPrintJSONOutput(t *testing.T) {
 // --- NewEnvelope (functional options) tests ---
 
 func TestNewEnvelopeDefaults(t *testing.T) {
-	os.Unsetenv("COJIRA_OUTPUT_MODE")
+	_ = os.Unsetenv("COJIRA_OUTPUT_MODE")
 	SetMode("")
 	e := NewEnvelope(WithOK(true), WithTool("jira"), WithCommand("info"))
 	assert.Equal(t, "1.0", e.SchemaVersion)
@@ -206,14 +206,14 @@ func TestSetAndGetMode(t *testing.T) {
 	SetMode("json")
 	assert.Equal(t, "json", GetMode())
 	SetMode("")
-	os.Unsetenv("COJIRA_OUTPUT_MODE")
+	_ = os.Unsetenv("COJIRA_OUTPUT_MODE")
 	assert.Equal(t, "human", GetMode())
 }
 
 func TestGetModeFromEnv(t *testing.T) {
 	SetMode("")
-	os.Setenv("COJIRA_OUTPUT_MODE", "summary")
-	defer os.Unsetenv("COJIRA_OUTPUT_MODE")
+	_ = os.Setenv("COJIRA_OUTPUT_MODE", "summary")
+	defer func() { _ = os.Unsetenv("COJIRA_OUTPUT_MODE") }()
 	assert.Equal(t, "summary", GetMode())
 }
 

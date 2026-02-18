@@ -42,7 +42,7 @@ func TestLoadIfPresent(t *testing.T) {
 
 	// Ensure the var is not set yet.
 	t.Setenv("COJIRA_TEST_VAR", "")
-	os.Unsetenv("COJIRA_TEST_VAR")
+	_ = os.Unsetenv("COJIRA_TEST_VAR")
 
 	loaded := LoadIfPresent([]string{envFile})
 	assert.Equal(t, envFile, loaded)
@@ -75,7 +75,7 @@ func TestLoadIfPresentFirstFileWins(t *testing.T) {
 	require.NoError(t, os.WriteFile(env2, []byte("COJIRA_FIRST=b\n"), 0644))
 
 	t.Setenv("COJIRA_FIRST", "")
-	os.Unsetenv("COJIRA_FIRST")
+	_ = os.Unsetenv("COJIRA_FIRST")
 
 	loaded := LoadIfPresent([]string{env1, env2})
 	assert.Equal(t, env1, loaded)

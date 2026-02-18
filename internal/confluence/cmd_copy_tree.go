@@ -157,7 +157,7 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 		}
 		// Fall through to manual copy.
 	} else {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode == 404 || resp.StatusCode == 405 {
 			if strict {
 				if mode == "json" {

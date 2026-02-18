@@ -60,7 +60,7 @@ func runTransition(cmd *cobra.Command, args []string) error {
 				nil, nil, []any{errObj}, "", "", "", &ec,
 			))
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", msg)
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", msg)
 		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: msg, ExitCode: 2}
 	}
 	if transitionArg == "" && toFlag == "" {
@@ -74,7 +74,7 @@ func runTransition(cmd *cobra.Command, args []string) error {
 				nil, nil, []any{errObj}, "", "", "", &ec,
 			))
 		}
-		fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", msg)
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", msg)
 		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: msg, ExitCode: 2}
 	}
 
@@ -139,7 +139,7 @@ func runTransition(cmd *cobra.Command, args []string) error {
 					nil, nil, []any{errObj}, "", "", "", nil,
 				))
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: No transitions to status %q found for %s\n", toFlag, issueID)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error: No transitions to status %q found for %s\n", toFlag, issueID)
 			return &cerrors.CojiraError{Code: cerrors.TransitionNotFound, ExitCode: 1}
 		}
 
@@ -155,7 +155,7 @@ func runTransition(cmd *cobra.Command, args []string) error {
 			})
 			warnings = []any{warnObj}
 			if !quiet && mode != "json" {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: Multiple transitions found for status %q, using the first match.\n", toFlag)
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: Multiple transitions found for status %q, using the first match.\n", toFlag)
 			}
 		}
 	} else {
@@ -221,7 +221,7 @@ func runTransition(cmd *cobra.Command, args []string) error {
 					nil, nil, "", "", "", nil,
 				))
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "Skipped (idempotency key already used): %s\n", idemKey)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Skipped (idempotency key already used): %s\n", idemKey)
 			return nil
 		}
 	}

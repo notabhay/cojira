@@ -103,7 +103,7 @@ func runBulkUpdateSummaries(cmd *cobra.Command, _ []string) error {
 			r := output.Receipt{OK: false, Message: fmt.Sprintf("%s: %v", m.Key, opErr)}
 			item["receipt"] = r.Format()
 			if mode != "json" && !quiet && mode != "summary" {
-				fmt.Fprintln(cmd.ErrOrStderr(), r.Format())
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), r.Format())
 			}
 			failures = append(failures, failureEntry{key: m.Key, err: opErr.Error()})
 		} else {

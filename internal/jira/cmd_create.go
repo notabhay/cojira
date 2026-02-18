@@ -92,7 +92,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 					nil, nil, "", "", "", nil,
 				))
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "Skipped (idempotency key already used): %s\n", idemKey)
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Skipped (idempotency key already used): %s\n", idemKey)
 			return nil
 		}
 	}
