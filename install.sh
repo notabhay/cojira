@@ -2,8 +2,11 @@
 set -euo pipefail
 
 DEFAULT_VERSION="v0.1.2"
-DEFAULT_REPO_BASE_URL="https://git.rakuten-it.com/projects/~abhay.a.sriwastawa/repos/cojira"
+DEFAULT_REPO_REST_URL="https://git.rakuten-it.com/rest/api/1.0/projects/~abhay.a.sriwastawa/repos/cojira"
 DEFAULT_BOOTSTRAP_OUT="/tmp/cojira/COJIRA-BOOTSTRAP.md"
+
+DEFAULT_GO_VERSION="1.22.0"
+DEFAULT_GO_BASE_URL="https://go.dev/dl"
 
 log() {
   printf '%s\n' "$*" >&2
@@ -16,6 +19,11 @@ die() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+parse_host() {
+  local url="$1"
+  printf '%s\n' "$url" | sed -E 's|^https?://([^/]+)/.*$|\\1|'
 }
 
 prompt_tty() {
@@ -73,42 +81,63 @@ detect_arch() {
   esac
 }
 
-sha256_file() {
-  local file="$1"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$file" | awk '{print $1}'
+ensure_go() {
+  local tmpdir="$1"
+
+  if command -v go >/dev/null 2>&1; then
+    printf '%s' "go"
     return 0
   fi
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$file" | awk '{print $1}'
+
+  local go_version="${COJIRA_GO_VERSION:-$DEFAULT_GO_VERSION}"
+  local go_base_url="${COJIRA_GO_BASE_URL:-$DEFAULT_GO_BASE_URL}"
+
+  local os arch filename url
+  os="$(detect_os)"
+  arch="$(detect_arch)"
+
+  filename="go${go_version}.${os}-${arch}.tar.gz"
+  url="${go_base_url}/${filename}"
+
+  local go_root="${COJIRA_GO_INSTALL_ROOT:-${HOME}/.local/share/cojira/go}"
+  local go_install_dir="${go_root}/${go_version}"
+  local go_bin="${go_install_dir}/go/bin/go"
+  if [ -x "$go_bin" ]; then
+    printf '%s' "$go_bin"
     return 0
   fi
-  return 1
+
+  log "Go not found; downloading toolchain: ${url}"
+  mkdir -p "$go_install_dir"
+
+  local tarball="${tmpdir}/${filename}"
+  curl -fsSL --retry 3 --retry-delay 1 -o "$tarball" "$url" || die "Failed to download Go toolchain"
+
+  # The tarball contains a top-level "go/" directory.
+  rm -rf "${go_install_dir}/go" 2>/dev/null || true
+  tar -xzf "$tarball" -C "$go_install_dir" || die "Failed to extract Go toolchain"
+
+  [ -x "$go_bin" ] || die "Go toolchain install failed: ${go_bin} not found"
+  printf '%s' "$go_bin"
 }
 
 main() {
   need_cmd curl
   need_cmd tar
-  need_cmd awk
+  need_cmd find
   need_cmd uname
   need_cmd sed
 
   local version="${COJIRA_VERSION:-$DEFAULT_VERSION}"
-  local repo_base_url="${COJIRA_REPO_BASE_URL:-$DEFAULT_REPO_BASE_URL}"
+  case "$version" in
+    v*) ;;
+    *) version="v${version}" ;;
+  esac
   local ref="${COJIRA_REF:-refs/tags/${version}}"
+
+  local repo_rest_url="${COJIRA_REPO_REST_URL:-$DEFAULT_REPO_REST_URL}"
   local install_dir="${COJIRA_INSTALL_DIR:-${GOBIN:-$HOME/.local/bin}}"
   local bootstrap_out="${COJIRA_BOOTSTRAP_OUT:-$DEFAULT_BOOTSTRAP_OUT}"
-
-  local os arch archive_name archive_file releases_dir raw_archive_url raw_checksums_url
-  os="$(detect_os)"
-  arch="$(detect_arch)"
-
-  archive_name="cojira_${version}_${os}_${arch}"
-  archive_file="${archive_name}.tar.gz"
-  releases_dir="releases/${version}"
-
-  raw_archive_url="${repo_base_url}/raw/${releases_dir}/${archive_file}?at=${ref}"
-  raw_checksums_url="${repo_base_url}/raw/${releases_dir}/checksums.txt?at=${ref}"
 
   local bb_user="${COJIRA_BITBUCKET_USER:-${BITBUCKET_USER:-}}"
   local bb_token="${COJIRA_BITBUCKET_TOKEN:-${BITBUCKET_TOKEN:-}}"
@@ -128,8 +157,8 @@ main() {
   trap 'rm -rf "$tmpdir"' EXIT
 
   local repo_host netrc_path
-  repo_host="$(printf '%s\n' "$repo_base_url" | sed -E 's|^https?://([^/]+)/.*$|\\1|')"
-  [ -n "$repo_host" ] || die "Could not parse host from COJIRA_REPO_BASE_URL: ${repo_base_url}"
+  repo_host="$(parse_host "$repo_rest_url")"
+  [ -n "$repo_host" ] || die "Could not parse host from COJIRA_REPO_REST_URL: ${repo_rest_url}"
 
   netrc_path="${tmpdir}/.netrc"
   (umask 077 && cat >"$netrc_path" <<EOF
@@ -139,40 +168,32 @@ password ${bb_token}
 EOF
   )
 
-  local archive_path checksums_path extract_dir bin_src bin_dst
-  archive_path="${tmpdir}/${archive_file}"
-  checksums_path="${tmpdir}/checksums.txt"
-  extract_dir="${tmpdir}/extract"
+  local go_cmd
+  go_cmd="$(ensure_go "$tmpdir")"
+
+  local src_archive_path extract_dir
+  src_archive_path="${tmpdir}/cojira-src.tar.gz"
+  extract_dir="${tmpdir}/src"
   mkdir -p "$extract_dir"
 
-  log "Downloading ${archive_file} (${os}/${arch})..."
-  curl -fsSL --retry 3 --retry-delay 1 --netrc-file "$netrc_path" -o "$archive_path" "$raw_archive_url"
-  curl -fsSL --retry 3 --retry-delay 1 --netrc-file "$netrc_path" -o "$checksums_path" "$raw_checksums_url"
+  local archive_url
+  archive_url="${repo_rest_url}/archive?at=${ref}&format=tar.gz"
 
-  local expected actual
-  expected="$(awk -v f="$archive_file" '$2 == f { print $1 }' "$checksums_path" | head -n 1 || true)"
-  if [ -z "$expected" ]; then
-    die "Checksum not found for ${archive_file} in checksums.txt"
-  fi
-  if ! actual="$(sha256_file "$archive_path")"; then
-    die "No sha256 tool found (need sha256sum or shasum)"
-  fi
-  if [ "$actual" != "$expected" ]; then
-    die "Checksum mismatch for ${archive_file}"
-  fi
+  log "Downloading source archive (${ref})..."
+  curl -fsSL --retry 3 --retry-delay 1 --netrc-file "$netrc_path" -o "$src_archive_path" "$archive_url" || die "Failed to download source archive"
+  tar -xzf "$src_archive_path" -C "$extract_dir" || die "Failed to extract source archive"
 
-  tar -xzf "$archive_path" -C "$extract_dir"
-  bin_src="${extract_dir}/cojira"
-  [ -f "$bin_src" ] || die "Binary not found in archive: ${archive_file}"
+  local go_mod_path src_dir
+  go_mod_path="$(find "$extract_dir" -maxdepth 4 -name go.mod -print -quit || true)"
+  [ -n "$go_mod_path" ] || die "Could not locate go.mod in extracted source"
+  src_dir="$(dirname "$go_mod_path")"
 
   mkdir -p "$install_dir"
+  local bin_dst
   bin_dst="${install_dir}/cojira"
-  if command -v install >/dev/null 2>&1; then
-    install -m 0755 "$bin_src" "$bin_dst"
-  else
-    cp "$bin_src" "$bin_dst"
-    chmod 0755 "$bin_dst"
-  fi
+
+  log "Building cojira (${version}) with ${go_cmd}..."
+  (cd "$src_dir" && CGO_ENABLED=0 "$go_cmd" build -trimpath -ldflags "-s -w -X github.com/cojira/cojira/internal/version.Version=${version}" -o "$bin_dst" .) || die "Build failed"
 
   log "Installed: ${bin_dst}"
   "${bin_dst}" --version

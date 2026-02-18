@@ -30,7 +30,7 @@ If `cojira` is already on your PATH, skip to "Verify" below.
 
 ### Install with curl (recommended; no git/Go)
 
-This installs a prebuilt binary to `~/.local/bin/cojira` (or `$GOBIN/cojira`) and writes the bootstrap guide + templates to `/tmp/cojira/`.
+This downloads a source archive for the tagged version (no git clone) and builds/installs to `~/.local/bin/cojira` (or `$GOBIN/cojira`). If Go isn't installed, it downloads a user-local Go toolchain first.
 
 ```bash
 read -r -p "Bitbucket username: " COJIRA_BITBUCKET_USER < /dev/tty
