@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_VERSION="v0.1.2"
-DEFAULT_REPO_REST_URL="https://git.rakuten-it.com/rest/api/1.0/projects/~abhay.a.sriwastawa/repos/cojira"
+DEFAULT_VERSION="v0.1.3"
+DEFAULT_GITHUB_REPO="notabhay/cojira"
 DEFAULT_BOOTSTRAP_OUT="/tmp/cojira/COJIRA-BOOTSTRAP.md"
 
 DEFAULT_GO_VERSION="1.22.0"
@@ -19,46 +19,6 @@ die() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
-}
-
-parse_host() {
-  local url="$1"
-  printf '%s\n' "$url" | sed -E 's|^https?://([^/]+)/.*$|\\1|'
-}
-
-prompt_tty() {
-  local prompt="$1"
-  local var_name="$2"
-  local default="${3:-}"
-  local value=""
-
-  if [ -r /dev/tty ]; then
-    if [ -n "$default" ]; then
-      read -r -p "${prompt} [${default}]: " value < /dev/tty || true
-      value="${value:-$default}"
-    else
-      read -r -p "${prompt}: " value < /dev/tty || true
-    fi
-  else
-    die "No TTY available; set ${var_name} in the environment"
-  fi
-
-  printf -v "$var_name" '%s' "$value"
-}
-
-prompt_secret_tty() {
-  local prompt="$1"
-  local var_name="$2"
-  local value=""
-
-  if [ -r /dev/tty ]; then
-    read -r -s -p "${prompt}: " value < /dev/tty || true
-    printf '\n' > /dev/tty
-  else
-    die "No TTY available; set ${var_name} in the environment"
-  fi
-
-  printf -v "$var_name" '%s' "$value"
 }
 
 detect_os() {
@@ -135,38 +95,13 @@ main() {
   esac
   local ref="${COJIRA_REF:-refs/tags/${version}}"
 
-  local repo_rest_url="${COJIRA_REPO_REST_URL:-$DEFAULT_REPO_REST_URL}"
+  local github_repo="${COJIRA_GITHUB_REPO:-$DEFAULT_GITHUB_REPO}"
   local install_dir="${COJIRA_INSTALL_DIR:-${GOBIN:-$HOME/.local/bin}}"
   local bootstrap_out="${COJIRA_BOOTSTRAP_OUT:-$DEFAULT_BOOTSTRAP_OUT}"
-
-  local bb_user="${COJIRA_BITBUCKET_USER:-${BITBUCKET_USER:-}}"
-  local bb_token="${COJIRA_BITBUCKET_TOKEN:-${BITBUCKET_TOKEN:-}}"
-
-  if [ -z "$bb_user" ]; then
-    bb_user="$(whoami 2>/dev/null || true)"
-  fi
-  if [ -z "$bb_user" ]; then
-    prompt_tty "Bitbucket username" bb_user ""
-  fi
-  if [ -z "$bb_token" ]; then
-    prompt_secret_tty "Bitbucket HTTP access token (PAT)" bb_token
-  fi
 
   local tmpdir
   tmpdir="$(mktemp -d)"
   trap 'rm -rf "$tmpdir"' EXIT
-
-  local repo_host netrc_path
-  repo_host="$(parse_host "$repo_rest_url")"
-  [ -n "$repo_host" ] || die "Could not parse host from COJIRA_REPO_REST_URL: ${repo_rest_url}"
-
-  netrc_path="${tmpdir}/.netrc"
-  (umask 077 && cat >"$netrc_path" <<EOF
-machine ${repo_host}
-login ${bb_user}
-password ${bb_token}
-EOF
-  )
 
   local go_cmd
   go_cmd="$(ensure_go "$tmpdir")"
@@ -177,10 +112,10 @@ EOF
   mkdir -p "$extract_dir"
 
   local archive_url
-  archive_url="${repo_rest_url}/archive?at=${ref}&format=tar.gz"
+  archive_url="https://github.com/${github_repo}/archive/${ref}.tar.gz"
 
   log "Downloading source archive (${ref})..."
-  curl -fsSL --retry 3 --retry-delay 1 --netrc-file "$netrc_path" -o "$src_archive_path" "$archive_url" || die "Failed to download source archive"
+  curl -fsSL --retry 3 --retry-delay 1 -o "$src_archive_path" "$archive_url" || die "Failed to download source archive"
   tar -xzf "$src_archive_path" -C "$extract_dir" || die "Failed to extract source archive"
 
   local go_mod_path src_dir
@@ -193,7 +128,7 @@ EOF
   bin_dst="${install_dir}/cojira"
 
   log "Building cojira (${version}) with ${go_cmd}..."
-  (cd "$src_dir" && CGO_ENABLED=0 "$go_cmd" build -trimpath -ldflags "-s -w -X github.com/cojira/cojira/internal/version.Version=${version}" -o "$bin_dst" .) || die "Build failed"
+  (cd "$src_dir" && CGO_ENABLED=0 "$go_cmd" build -trimpath -ldflags "-s -w -X github.com/notabhay/cojira/internal/version.Version=${version}" -o "$bin_dst" .) || die "Build failed"
 
   log "Installed: ${bin_dst}"
   "${bin_dst}" --version

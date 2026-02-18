@@ -9,9 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cojira/cojira/internal/cli"
-	cerrors "github.com/cojira/cojira/internal/errors"
-	"github.com/cojira/cojira/internal/output"
+	"github.com/notabhay/cojira/internal/cli"
+	cerrors "github.com/notabhay/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 )
 

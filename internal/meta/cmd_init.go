@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cojira/cojira/internal/cli"
-	"github.com/cojira/cojira/internal/dotenv"
-	cerrors "github.com/cojira/cojira/internal/errors"
-	"github.com/cojira/cojira/internal/jira"
-	"github.com/cojira/cojira/internal/output"
+	"github.com/notabhay/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/dotenv"
+	cerrors "github.com/notabhay/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/jira"
+	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )

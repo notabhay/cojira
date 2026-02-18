@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/cojira/cojira/internal/board"
-	"github.com/cojira/cojira/internal/cli"
-	"github.com/cojira/cojira/internal/confluence"
-	"github.com/cojira/cojira/internal/dotenv"
-	cerrors "github.com/cojira/cojira/internal/errors"
-	"github.com/cojira/cojira/internal/jira"
-	"github.com/cojira/cojira/internal/meta"
-	"github.com/cojira/cojira/internal/version"
+	"github.com/notabhay/cojira/internal/board"
+	"github.com/notabhay/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/confluence"
+	"github.com/notabhay/cojira/internal/dotenv"
+	cerrors "github.com/notabhay/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/jira"
+	"github.com/notabhay/cojira/internal/meta"
+	"github.com/notabhay/cojira/internal/version"
 )
 
 func main() {

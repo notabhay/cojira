@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	cerrors "github.com/cojira/cojira/internal/errors"
+	cerrors "github.com/notabhay/cojira/internal/errors"
 )
 
 // ConfluenceIdentifierFormats describes the supported page identifier formats.

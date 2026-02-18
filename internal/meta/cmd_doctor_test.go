@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cojira/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/cli"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,6 +55,9 @@ func TestDoctorFixWritesEnv(t *testing.T) {
 	require.NoError(t, os.Chdir(tmpDir))
 	defer func() { _ = os.Chdir(origDir) }()
 
+	// Ensure the global credentials path resolves inside the temp dir.
+	t.Setenv("XDG_CONFIG_HOME", tmpDir)
+
 	// Clear required env vars.
 	for _, key := range []string{"CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN",
 		"JIRA_BASE_URL", "JIRA_API_TOKEN"} {
@@ -87,7 +90,7 @@ func TestDoctorFixWritesEnv(t *testing.T) {
 	assert.True(t, ok)
 	assert.Len(t, written, 4)
 
-	envPath := filepath.Join(tmpDir, ".env")
+	envPath := filepath.Join(tmpDir, "cojira", "credentials")
 	assert.FileExists(t, envPath)
 	content, err := os.ReadFile(envPath)
 	require.NoError(t, err)

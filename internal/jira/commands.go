@@ -1,7 +1,7 @@
 package jira
 
 import (
-	"github.com/cojira/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/cli"
 	"github.com/spf13/cobra"
 )
 

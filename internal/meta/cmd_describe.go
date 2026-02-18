@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cojira/cojira/internal/cli"
-	"github.com/cojira/cojira/internal/dotenv"
-	"github.com/cojira/cojira/internal/output"
-	"github.com/cojira/cojira/internal/version"
+	"github.com/notabhay/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/dotenv"
+	"github.com/notabhay/cojira/internal/output"
+	"github.com/notabhay/cojira/internal/version"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )

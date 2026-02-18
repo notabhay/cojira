@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	cerrors "github.com/cojira/cojira/internal/errors"
+	cerrors "github.com/notabhay/cojira/internal/errors"
 )
 
 func readJSONFile(path string) (map[string]any, error) {

@@ -1,5 +1,5 @@
 BINARY  := cojira
-MODULE  := github.com/cojira/cojira
+MODULE  := github.com/notabhay/cojira
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0")
 LDFLAGS := -ldflags "-X $(MODULE)/internal/version.Version=$(VERSION)"
 

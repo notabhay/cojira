@@ -5,7 +5,7 @@ package cli
 import (
 	"os"
 
-	"github.com/cojira/cojira/internal/output"
+	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 )
 

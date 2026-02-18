@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	cerrors "github.com/cojira/cojira/internal/errors"
+	cerrors "github.com/notabhay/cojira/internal/errors"
 )
 
 // PageGetter is the minimal interface needed to resolve page identifiers

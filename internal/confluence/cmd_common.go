@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cojira/cojira/internal/cli"
-	"github.com/cojira/cojira/internal/config"
-	"github.com/cojira/cojira/internal/httpclient"
+	"github.com/notabhay/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/config"
+	"github.com/notabhay/cojira/internal/httpclient"
 	"github.com/spf13/cobra"
 )
 

@@ -75,7 +75,7 @@ var recoveries = map[string]map[string]any{
 	CopyFailed:          {"action": "retry"},
 	AmbiguousTransition: {"action": "run", "command": "cojira jira transitions {issue}"},
 	TransitionNotFound:  {"action": "run", "command": "cojira jira transitions {issue}"},
-	MissingDep:          {"action": "run", "command": "go install github.com/cojira/cojira@latest"},
+	MissingDep:          {"action": "run", "command": "go install github.com/notabhay/cojira@latest"},
 	Error:               {"action": "run", "command": "cojira doctor"},
 	ConfigError:         {"action": "run", "command": "cojira doctor"},
 }

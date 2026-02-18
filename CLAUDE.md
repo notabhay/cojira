@@ -18,7 +18,7 @@ Alternative (requires Go 1.22+):
 
 ```bash
 go build -o cojira .
-go install github.com/cojira/cojira@latest
+go install github.com/notabhay/cojira@latest
 ```
 
 ## Setup

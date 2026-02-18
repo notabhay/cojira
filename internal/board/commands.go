@@ -1,7 +1,7 @@
 package board
 
 import (
-	"github.com/cojira/cojira/internal/jira"
+	"github.com/notabhay/cojira/internal/jira"
 	"github.com/spf13/cobra"
 )
 

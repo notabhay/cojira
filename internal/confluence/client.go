@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	cerrors "github.com/cojira/cojira/internal/errors"
-	"github.com/cojira/cojira/internal/httpclient"
+	cerrors "github.com/notabhay/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/httpclient"
 )
 
 // ClientConfig holds the parameters for creating a new Confluence client.

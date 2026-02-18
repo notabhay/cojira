@@ -7,13 +7,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cojira/cojira/internal/cli"
-	"github.com/cojira/cojira/internal/confluence"
-	"github.com/cojira/cojira/internal/dotenv"
-	cerrors "github.com/cojira/cojira/internal/errors"
-	"github.com/cojira/cojira/internal/httpclient"
-	"github.com/cojira/cojira/internal/jira"
-	"github.com/cojira/cojira/internal/output"
+	"github.com/notabhay/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/confluence"
+	"github.com/notabhay/cojira/internal/dotenv"
+	cerrors "github.com/notabhay/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/httpclient"
+	"github.com/notabhay/cojira/internal/jira"
+	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -38,7 +38,7 @@ func NewDoctorCmd() *cobra.Command {
 	}
 	cli.AddHTTPRetryFlags(cmd)
 	cli.AddOutputFlags(cmd, false)
-	cmd.Flags().Bool("fix", false, "Attempt to fix missing env vars by writing .env")
+	cmd.Flags().Bool("fix", false, "Attempt to fix missing env vars by writing a credentials file")
 	cmd.Flags().Bool("interactive", false, "Allow prompts for --fix")
 	return cmd
 }
@@ -185,6 +185,9 @@ func runFix(jsonOut bool) map[string]any {
 	}
 
 	envPath := filepath.Join(".", ".env")
+	if cred := dotenv.CredentialsPath(); cred != "" {
+		envPath = cred
+	}
 	for _, p := range dotenv.DefaultSearchPaths() {
 		if info, err := os.Stat(p); err == nil && !info.IsDir() {
 			envPath = p
@@ -280,6 +283,9 @@ func appendEnvValues(path string, values map[string]string, existing map[string]
 		existingContent = string(data)
 	}
 
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil

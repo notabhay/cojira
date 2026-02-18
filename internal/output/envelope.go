@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/cojira/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/errors"
 )
 
 // UTCNowISO returns the current time in UTC, truncated to seconds,

@@ -3,9 +3,9 @@ package jira
 import (
 	"fmt"
 
-	"github.com/cojira/cojira/internal/cli"
-	"github.com/cojira/cojira/internal/idempotency"
-	"github.com/cojira/cojira/internal/output"
+	"github.com/notabhay/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/idempotency"
+	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 )
 

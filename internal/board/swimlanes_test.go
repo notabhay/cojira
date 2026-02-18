@@ -3,7 +3,7 @@ package board
 import (
 	"testing"
 
-	cerrors "github.com/cojira/cojira/internal/errors"
+	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

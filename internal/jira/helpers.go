@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strings"
 
-	cerrors "github.com/cojira/cojira/internal/errors"
+	cerrors "github.com/notabhay/cojira/internal/errors"
 )
 
 // readJSONFile reads and parses a JSON file, returning a map.

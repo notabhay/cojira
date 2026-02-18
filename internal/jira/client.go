@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cojira/cojira/internal/dotenv"
-	cerrors "github.com/cojira/cojira/internal/errors"
-	"github.com/cojira/cojira/internal/httpclient"
+	"github.com/notabhay/cojira/internal/dotenv"
+	cerrors "github.com/notabhay/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/httpclient"
 )
 
 const (

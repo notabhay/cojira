@@ -8,8 +8,8 @@ import (
 	"github.com/google/shlex"
 	"github.com/spf13/cobra"
 
-	"github.com/cojira/cojira/internal/config"
-	"github.com/cojira/cojira/internal/dotenv"
+	"github.com/notabhay/cojira/internal/config"
+	"github.com/notabhay/cojira/internal/dotenv"
 )
 
 const maxAliasDepth = 3

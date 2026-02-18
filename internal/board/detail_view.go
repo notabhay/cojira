@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	cerrors "github.com/cojira/cojira/internal/errors"
+	cerrors "github.com/notabhay/cojira/internal/errors"
 )
 
 // DetailViewField represents a board detail view field configuration.

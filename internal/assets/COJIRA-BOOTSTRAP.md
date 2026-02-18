@@ -33,29 +33,13 @@ If `cojira` is already on your PATH, skip to "Verify" below.
 This downloads a source archive for the tagged version (no git clone) and builds/installs to `~/.local/bin/cojira` (or `$GOBIN/cojira`). If Go isn't installed, it downloads a user-local Go toolchain first.
 
 ```bash
-read -r -p "Bitbucket username: " COJIRA_BITBUCKET_USER < /dev/tty
-read -r -s -p "Bitbucket HTTP access token (PAT): " COJIRA_BITBUCKET_TOKEN < /dev/tty; echo > /dev/tty
-export COJIRA_BITBUCKET_USER COJIRA_BITBUCKET_TOKEN
-
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
-cat > "${tmpdir}/.netrc" <<EOF
-machine git.rakuten-it.com
-login ${COJIRA_BITBUCKET_USER}
-password ${COJIRA_BITBUCKET_TOKEN}
-EOF
-chmod 600 "${tmpdir}/.netrc"
-
-curl -fsSL --netrc-file "${tmpdir}/.netrc" \
-  "https://git.rakuten-it.com/projects/~abhay.a.sriwastawa/repos/cojira/raw/install.sh?at=refs/tags/v0.1.2" | bash
-
-unset COJIRA_BITBUCKET_TOKEN
+curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/v0.1.3/install.sh | NODE_TLS_REJECT_UNAUTHORIZED=0 bash
 ```
 
 ### Install from repo (requires Go 1.22+)
 
 ```bash
-git clone https://git.rakuten-it.com/scm/~abhay.a.sriwastawa/cojira.git /tmp/cojira-build \
+git clone https://github.com/notabhay/cojira.git /tmp/cojira-build \
   && cd /tmp/cojira-build \
   && go build -o "${GOBIN:-$HOME/.local/bin}/cojira" . \
   && cd - \
@@ -83,13 +67,20 @@ Store Jira issue snapshots under `0-JIRA/` and Confluence page XHTML under `1-CO
 
 ### Credentials (preferred: interactive wizard)
 
-The easiest way to set up credentials is the interactive wizard, which auto-detects base URLs and context paths:
+`cojira` can load credentials globally from `~/.config/cojira/credentials` (or `$XDG_CONFIG_HOME/cojira/credentials`).
+
+If you don't have tokens yet, create them here:
+- Confluence PATs: https://confluence.rakuten-it.com/confluence/plugins/personalaccesstokens/usertokens.action
+- Jira PATs: https://jira.rakuten-it.com/jira/secure/ViewProfile.jspa?selectedTab=com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens
+
+The easiest way to set up credentials is the interactive wizard, which auto-detects base URLs and context paths and writes the global credentials file:
 
 ```bash
-cojira init
+mkdir -p ~/.config/cojira
+cojira init --path ~/.config/cojira/credentials
 ```
 
-Tell the user to fill in **only** the token fields in `.env` (do not paste tokens into chat). The wizard will auto-detect the correct base URL (including context paths like `/jira`).
+Do not paste tokens into chat. Tokens are not echoed in the terminal and are written only to the credentials file.
 
 ### Credentials (alternative: manual .env)
 
@@ -127,7 +118,7 @@ If doctor reports errors:
 
 `cojira` loads the first `.env` it finds in:
 1) `./.env` (current working directory)
-2) `<repo-root>/.env` (when running inside the repo)
+2) `~/.config/cojira/credentials` (global credentials file)
 
 Optional project defaults (recommended): create `.cojira.json` to set defaults like project key, space key, or root page ID.
 See `examples/cojira-project.json`.

@@ -1,4 +1,4 @@
-module github.com/cojira/cojira
+module github.com/notabhay/cojira
 
 go 1.22
 

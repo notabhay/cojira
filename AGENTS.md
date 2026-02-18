@@ -20,7 +20,7 @@ Alternative (requires Go 1.22+):
 
 ```bash
 go build -o cojira .
-go install github.com/cojira/cojira@latest
+go install github.com/notabhay/cojira@latest
 ```
 
 ## Setup
@@ -471,7 +471,7 @@ When consuming JSON output, errors include a `code` field. Here are all recogniz
 | `OP_FAILED` | *(passes raw message if ≤160 chars)* | — |
 | `UNSUPPORTED` | That operation isn't supported yet. | — |
 | `ERROR` | Something unexpected went wrong. | run: `cojira doctor` |
-| `MISSING_DEP` | A required package is missing. | run: `go install github.com/cojira/cojira@latest` |
+| `MISSING_DEP` | A required package is missing. | run: `go install github.com/notabhay/cojira@latest` |
 
 ---
 

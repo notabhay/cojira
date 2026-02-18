@@ -8,6 +8,24 @@ import (
 	"strings"
 )
 
+// CredentialsPath returns the default path for global cojira credentials
+// (in .env format). This lets users configure Jira/Confluence once and reuse
+// it across workspaces.
+//
+// Path:
+// - $XDG_CONFIG_HOME/cojira/credentials (if set)
+// - $HOME/.config/cojira/credentials
+func CredentialsPath() string {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
+		return filepath.Join(xdg, "cojira", "credentials")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".config", "cojira", "credentials")
+}
+
 // ParseLines parses .env file content into key-value pairs.
 // It handles comments, blank lines, "export" prefixes, and quoted values.
 func ParseLines(content string) map[string]string {
@@ -41,13 +59,18 @@ func ParseLines(content string) map[string]string {
 }
 
 // DefaultSearchPaths returns the default .env search paths:
-// the current working directory's .env file.
+// - the current working directory's .env file
+// - the user's global credentials file (~/.config/cojira/credentials)
 func DefaultSearchPaths() []string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil
 	}
-	return []string{filepath.Join(cwd, ".env")}
+	paths := []string{filepath.Join(cwd, ".env")}
+	if cred := CredentialsPath(); cred != "" {
+		paths = append(paths, cred)
+	}
+	return paths
 }
 
 // LoadIfPresent loads the first existing .env file from paths.
