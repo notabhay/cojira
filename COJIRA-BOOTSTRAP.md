@@ -28,6 +28,30 @@ cojira bootstrap
 
 If `cojira` is already on your PATH, skip to "Verify" below.
 
+### Install with curl (recommended; no git/Go)
+
+This installs a prebuilt binary to `~/.local/bin/cojira` (or `$GOBIN/cojira`) and writes the bootstrap guide + templates to `/tmp/cojira/`.
+
+```bash
+read -r -p "Bitbucket username: " COJIRA_BITBUCKET_USER < /dev/tty
+read -r -s -p "Bitbucket HTTP access token (PAT): " COJIRA_BITBUCKET_TOKEN < /dev/tty; echo > /dev/tty
+export COJIRA_BITBUCKET_USER COJIRA_BITBUCKET_TOKEN
+
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+cat > "${tmpdir}/.netrc" <<EOF
+machine git.rakuten-it.com
+login ${COJIRA_BITBUCKET_USER}
+password ${COJIRA_BITBUCKET_TOKEN}
+EOF
+chmod 600 "${tmpdir}/.netrc"
+
+curl -fsSL --netrc-file "${tmpdir}/.netrc" \
+  "https://git.rakuten-it.com/projects/~abhay.a.sriwastawa/repos/cojira/raw/install.sh?at=refs/tags/v0.1.2" | bash
+
+unset COJIRA_BITBUCKET_TOKEN
+```
+
 ### Install from repo (requires Go 1.22+)
 
 ```bash

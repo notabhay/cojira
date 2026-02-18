@@ -12,11 +12,12 @@ If `setup_needed` is true in the response, guide the user through `cojira init` 
 
 ## Install
 
-```bash
-# Build from source
-go build -o cojira .
+Preferred (no git/Go): follow `COJIRA-BOOTSTRAP.md` → "Install with curl".
 
-# Or install to GOPATH/bin
+Alternative (requires Go 1.22+):
+
+```bash
+go build -o cojira .
 go install github.com/cojira/cojira@latest
 ```
 
