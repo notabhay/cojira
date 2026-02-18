@@ -33,7 +33,7 @@ If `cojira` is already on your PATH, skip to "Verify" below.
 This downloads a source archive for the tagged version (no git clone) and builds/installs to `~/.local/bin/cojira` (or `$GOBIN/cojira`). If Go isn't installed, it downloads a user-local Go toolchain first.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/v0.1.3/install.sh | NODE_TLS_REJECT_UNAUTHORIZED=0 bash
+curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/v0.1.4/install.sh | NODE_TLS_REJECT_UNAUTHORIZED=0 bash
 ```
 
 ### Install from repo (requires Go 1.22+)

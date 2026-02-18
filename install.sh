@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_VERSION="v0.1.3"
+DEFAULT_VERSION="v0.1.4"
 DEFAULT_GITHUB_REPO="notabhay/cojira"
 DEFAULT_BOOTSTRAP_OUT="/tmp/cojira/COJIRA-BOOTSTRAP.md"
 
@@ -101,7 +101,7 @@ main() {
 
   local tmpdir
   tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' EXIT
+  trap "rm -rf \"$tmpdir\"" EXIT
 
   local go_cmd
   go_cmd="$(ensure_go "$tmpdir")"
