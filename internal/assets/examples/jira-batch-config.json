@@ -1,0 +1,22 @@
+{
+  "base_dir": ".",
+  "operations": [
+    {
+      "op": "create",
+      "file": "jira-create-payload.json"
+    },
+    {
+      "op": "update",
+      "issue": "PROJ-123",
+      "file": "jira-update-payload.json",
+      "notify": false
+    },
+    {
+      "op": "transition",
+      "issue": "PROJ-123",
+      "transition": "21",
+      "notify": true
+    }
+  ]
+}
+

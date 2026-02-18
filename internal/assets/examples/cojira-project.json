@@ -1,0 +1,10 @@
+{
+  "jira": {
+    "default_project": "PROJ",
+    "default_jql_scope": "project = PROJ"
+  },
+  "confluence": {
+    "default_space": "TEAM",
+    "root_page_id": "12345"
+  }
+}

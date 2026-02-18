@@ -1,0 +1,45 @@
+<ac:layout>
+  <ac:layout-section ac:type="single">
+    <ac:layout-cell>
+      <h1>Page Title</h1>
+      <p>This is an example Confluence page in <strong>storage format (XHTML)</strong>.</p>
+
+      <ac:structured-macro ac:name="note">
+        <ac:rich-text-body>
+          <p>This is a note panel. Always preserve <code>&lt;ac:...&gt;</code> macros when editing.</p>
+        </ac:rich-text-body>
+      </ac:structured-macro>
+
+      <h2>Section with a table</h2>
+      <table>
+        <tbody>
+          <tr>
+            <th>Header 1</th>
+            <th>Header 2</th>
+          </tr>
+          <tr>
+            <td>Cell 1</td>
+            <td>Cell 2</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Link to another page</h2>
+      <p>
+        <ac:link>
+          <ri:page ri:content-title="Another Page" ri:space-key="SPACE"/>
+          <ac:plain-text-link-body><![CDATA[Link text here]]></ac:plain-text-link-body>
+        </ac:link>
+      </p>
+
+      <ac:structured-macro ac:name="code">
+        <ac:parameter ac:name="language">python</ac:parameter>
+        <ac:plain-text-body><![CDATA[def hello():
+    print("Hello from cojira!")
+]]></ac:plain-text-body>
+      </ac:structured-macro>
+
+    </ac:layout-cell>
+  </ac:layout-section>
+</ac:layout>
+

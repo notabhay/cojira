@@ -1,0 +1,27 @@
+{
+  "base_dir": ".",
+  "operations": [
+    {
+      "op": "update",
+      "page": "12345",
+      "file": "confluence-page-content.html",
+      "title": "Optional New Title"
+    },
+    {
+      "op": "rename",
+      "page": "12346",
+      "title": "Renamed Page Title"
+    },
+    {
+      "op": "move",
+      "page": "12347",
+      "parent": "12340"
+    },
+    {
+      "op": "move",
+      "page": "12348",
+      "parent": "root"
+    }
+  ]
+}
+

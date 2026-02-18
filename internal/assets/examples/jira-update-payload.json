@@ -1,0 +1,11 @@
+{
+  "fields": {
+    "summary": "Updated issue title",
+    "description": "Updated description text.",
+    "labels": ["updated", "cojira"],
+    "priority": {
+      "name": "High"
+    }
+  }
+}
+

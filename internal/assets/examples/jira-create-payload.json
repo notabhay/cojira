@@ -1,0 +1,25 @@
+{
+  "fields": {
+    "project": {
+      "key": "PROJ"
+    },
+    "summary": "Example issue created via cojira",
+    "description": "This is the issue description.\n\nIt can contain multiple lines.",
+    "issuetype": {
+      "name": "Task"
+    },
+    "priority": {
+      "name": "Medium"
+    },
+    "labels": ["cojira", "example"],
+    "components": [
+      {
+        "name": "Backend"
+      }
+    ],
+    "assignee": {
+      "accountId": "123456:abcd-efgh-ijkl-mnop"
+    }
+  }
+}
+
