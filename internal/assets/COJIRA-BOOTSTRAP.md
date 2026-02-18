@@ -26,29 +26,24 @@ cojira bootstrap
 
 ## 1) Install + verify
 
-Choose one install method:
+If `cojira` is already on your PATH, skip to "Verify" below.
 
-### A) Build from source (recommended)
-
-Requires Go 1.21+:
+### Install from repo (requires Go 1.22+)
 
 ```bash
-go version
+git clone https://git.rakuten-it.com/scm/~abhay.a.sriwastawa/cojira.git /tmp/cojira-build \
+  && cd /tmp/cojira-build \
+  && go build -o "${GOBIN:-$HOME/.local/bin}/cojira" . \
+  && cd - \
+  && rm -rf /tmp/cojira-build
 ```
 
-```bash
-go build -o cojira .
-```
+Make sure `~/.local/bin` (or your `GOBIN`) is on your PATH.
 
-### B) Install via `go install` (alternative)
+### Verify
 
 ```bash
-go install github.com/cojira/cojira@latest
-```
-
-Verify the CLI is available:
-
-```bash
+cojira --version
 cojira --help
 ```
 
