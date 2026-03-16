@@ -7,12 +7,15 @@ import (
 	cerrors "github.com/notabhay/cojira/internal/errors"
 )
 
-// Operators for --set expressions.
 const (
-	OpJSONSet    = ":="
+	// OpJSONSet replaces a field using a JSON or object-style value.
+	OpJSONSet = ":="
+	// OpListAppend appends a value to a list-like field.
 	OpListAppend = "+="
+	// OpListRemove removes a value from a list-like field.
 	OpListRemove = "-="
-	OpSet        = "="
+	// OpSet assigns a plain scalar value to a field.
+	OpSet = "="
 )
 
 // ParseSetExpr parses a --set expression like "field=value", "field:=json",

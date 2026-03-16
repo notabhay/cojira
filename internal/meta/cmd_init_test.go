@@ -140,7 +140,7 @@ func TestWriteCojiraJSONStubSkipsExisting(t *testing.T) {
 func TestWriteCojiraJSONStubDetectsProjectFromURL(t *testing.T) {
 	tmpDir := t.TempDir()
 	result := writeCojiraJSONStub(tmpDir,
-		"https://jira.rakuten-it.com/jira/browse/MYPROJ-456", "")
+		"https://jira.example.com/jira/browse/MYPROJ-456", "")
 	assert.NotEmpty(t, result)
 
 	data, err := os.ReadFile(result)
@@ -156,7 +156,7 @@ func TestWriteCojiraJSONStubDetectsProjectFromURL(t *testing.T) {
 func TestWriteCojiraJSONStubDetectsSpaceFromURL(t *testing.T) {
 	tmpDir := t.TempDir()
 	result := writeCojiraJSONStub(tmpDir, "",
-		"https://confluence.rakuten-it.com/confluence/display/TEAMX/Some+Page")
+		"https://confluence.example.com/confluence/display/TEAMX/Some+Page")
 	assert.NotEmpty(t, result)
 
 	data, err := os.ReadFile(result)

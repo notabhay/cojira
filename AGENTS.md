@@ -1,483 +1,158 @@
 # Agent Instructions (cojira)
 
-`cojira` is an agent-first CLI for automating Confluence and Jira workflows. This document tells you everything you need to use it effectively.
+This is the canonical agent guide for `cojira`.
 
-**Important**: The user is non-technical. Never show CLI commands, JQL syntax, XHTML, exit codes, or raw JSON to the user. You run `cojira`; the user sees natural language summaries.
+Inside the repo, this file is the source of truth.
+Outside the repo, `COJIRA-BOOTSTRAP.md` and `internal/assets/COJIRA-BOOTSTRAP.md` must contain the same guidance so a coding agent can bootstrap from a clean workspace without reading anything else.
+
+If you already have `cojira` installed, regenerate this guide plus the example templates with:
+
+```bash
+cojira bootstrap --output /tmp/cojira/COJIRA-BOOTSTRAP.md --force
+```
+
+## Canonical setup prompt
+
+For a clean agent session, use this exact one-line prompt shape:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/beta/install.sh | bash && git clone --branch beta https://github.com/notabhay/cojira.git /tmp/cojira 2>/dev/null || git -C /tmp/cojira pull && follow /tmp/cojira/COJIRA-BOOTSTRAP.md
+```
+
+## What cojira is for
+
+`cojira` is an agent-first CLI for Jira and Confluence work.
+It exists for workflows where:
+
+- a human gives plain-language intent,
+- an agent performs the operational work,
+- and the tool provides structured output, safe previews, stable identifiers, and resumable mutation flows.
 
 ## First call
 
-If you haven't used cojira this session, start with:
-```
-cojira describe --with-context --output-mode json
-```
-If `setup_needed` is true in the response, guide the user through `cojira init` (interactive wizard that auto-detects base URLs and context paths).
-
-## Install
-
-Preferred (no git/Go): follow `COJIRA-BOOTSTRAP.md` → "Install with curl".
-
-Alternative (requires Go 1.22+):
+If you have not used `cojira` in this session yet, start with:
 
 ```bash
-go build -o cojira .
-go install github.com/notabhay/cojira@latest
+cojira describe --with-context --output-mode json
 ```
 
-## Setup
+If `setup_needed` is `true`, either:
 
-**Preferred**: Use the interactive setup wizard (auto-detects base URLs and context paths):
+- run `cojira init` for an interactive setup flow, or
+- write credentials manually using the `.env` format documented below.
+
+## Installation and bootstrap behavior
+
+### Curl install
+
+The canonical prompt above uses the beta-branch installer.
+By default it:
+
+- downloads source for the `beta` branch,
+- ensures a local Go toolchain is available if `go` is missing,
+- builds `cojira` into `${COJIRA_INSTALL_DIR:-${GOBIN:-$HOME/.local/bin}}/cojira`,
+- writes `COJIRA-BOOTSTRAP.md` to `/tmp/cojira/COJIRA-BOOTSTRAP.md`.
+
+### Optional installer overrides
+
+These are advanced overrides for the installer itself:
+
+- `COJIRA_VERSION`: version label to embed in the built binary.
+- `COJIRA_REF`: Git ref to download instead of the default `refs/heads/beta`.
+- `COJIRA_GITHUB_REPO`: alternate `owner/repo`.
+- `COJIRA_INSTALL_DIR`: install destination for the binary.
+- `COJIRA_BOOTSTRAP_OUT`: where the installer should write the bootstrap markdown.
+- `COJIRA_GO_VERSION`: Go version to auto-download if `go` is unavailable.
+- `COJIRA_GO_BASE_URL`: alternate base URL for Go downloads.
+- `COJIRA_GO_INSTALL_ROOT`: alternate location for the downloaded Go toolchain.
+
+### Source build
+
+If you already have the repo and Go 1.22+:
+
+```bash
+go build -o "${GOBIN:-$HOME/.local/bin}/cojira" .
+```
+
+### Verify
+
+```bash
+cojira --version
+cojira --help
+cojira doctor
+```
+
+## Credentials and environment
+
+### Where credentials can live
+
+`cojira` merges credentials in this order:
+
+1. inherited shell environment variables win,
+2. `./.env` fills any missing keys,
+3. `${XDG_CONFIG_HOME:-$HOME/.config}/cojira/credentials` fills any remaining missing keys.
+
+### Required environment variables
+
+- `CONFLUENCE_BASE_URL`: Confluence base URL.
+- `CONFLUENCE_API_TOKEN`: Confluence Personal Access Token.
+- `JIRA_BASE_URL`: Jira base URL. Include any context path such as `/jira` if your instance uses one.
+- `JIRA_API_TOKEN`: Jira Personal Access Token or API token.
+
+### Optional environment variables
+
+- `JIRA_EMAIL`: enable basic auth with email + token instead of bearer/PAT mode.
+- `JIRA_PROJECT`: default project for `jira sync` and related project-default behavior.
+- `JIRA_API_VERSION`: Jira REST API version override. Default is `2`.
+- `JIRA_AUTH_MODE`: force `basic` or `bearer`.
+- `JIRA_VERIFY_SSL`: set to `false` only when you intentionally need insecure TLS.
+- `JIRA_USER_AGENT`: custom HTTP user agent.
+- `COJIRA_OUTPUT_MODE`: default output mode when a command does not set one explicitly.
+- `COJIRA_IDEMPOTENCY_DIR`: override the local idempotency/resume checkpoint directory.
+- `XDG_CONFIG_HOME`: changes the global credentials location.
+- `XDG_CACHE_HOME`: changes the default idempotency cache location.
+
+### Interactive setup
+
+For a guided setup:
 
 ```bash
 cojira init
 ```
 
-**Alternative**: Copy `.env.example` to `.env` and fill in your credentials manually:
+To write the global credentials file directly:
 
 ```bash
-cp .env.example .env
-# Edit .env with your values
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/cojira"
+cojira init --path "${XDG_CONFIG_HOME:-$HOME/.config}/cojira/credentials"
 ```
 
-Required environment variables:
-- **Confluence**: `CONFLUENCE_BASE_URL`, `CONFLUENCE_API_TOKEN`
-- **Jira**: `JIRA_BASE_URL`, `JIRA_API_TOKEN`
-- **Optional**: `JIRA_EMAIL` enables basic auth (email + token). Omit for bearer/PAT auth.
+### Manual `.env` format
 
-**Important**: If your Jira instance has a context path (e.g. `/jira`), include it in `JIRA_BASE_URL`:
-`JIRA_BASE_URL=https://jira.rakuten-it.com/jira`
+Use this exact shape when writing credentials manually:
 
-Verify setup:
+```dotenv
+# Confluence
+CONFLUENCE_BASE_URL=https://confluence.example.com/confluence/
+CONFLUENCE_API_TOKEN=your-confluence-token
 
-```bash
-cojira doctor
+# Jira
+# Include the context path if your Jira uses one.
+JIRA_BASE_URL=https://jira.example.com/jira
+JIRA_API_TOKEN=your-jira-token
+
+# Optional Jira auth and behavior
+# JIRA_EMAIL=you@example.com
+# JIRA_PROJECT=PROJ
+# JIRA_API_VERSION=2
+# JIRA_AUTH_MODE=bearer
+# JIRA_VERIFY_SSL=true
+# JIRA_USER_AGENT=cojira/0.1
 ```
 
-Optional project defaults (recommended): create a `.cojira.json` to set defaults (see [.cojira.json schema](#cojirajson-project-defaults) below).
+### Project defaults with `.cojira.json`
 
-## Safety rules
-
-- Confluence page bodies are **storage-format XHTML**; never convert to Markdown.
-- Preserve all `<ac:...>` and `<ri:...>` macros.
-- Use `--dry-run` on bulk/batch operations before applying.
-- Use `cojira plan <tool> <cmd> ...` for previews when unsure.
-- Never print or paste tokens.
-- Use single quotes around JQL to avoid shell issues with `!=`.
-
-## Agent behavior
-
-- **You (the agent) run cojira.** Do not ask the user to run CLI commands; ask for links + desired changes, then do the work.
-- **Hide implementation details from the user.** Never show `cojira` commands, Python output, CLI flags, exit codes, JQL syntax, or XHTML in your messages.
-- Summarize results in plain language.
-- Default to `--output-mode summary` for read operations (info, search, whoami, find).
-- Use `--output-mode json` only when you need structured data for a follow-up operation.
-- If setup is missing, guide the user through `cojira init` (user-friendly prompts).
-- If `cojira doctor` reports errors, translate them into plain language for the user.
-
-## Intent → Action (phrasebook)
-
-### Jira
-
-- **"What's the status of PROJ-123?"** → `cojira jira info PROJ-123 --output-mode summary`
-- **"Show me details for PROJ-123"** → `cojira jira info PROJ-123 --output-mode summary` or `cojira jira get PROJ-123`
-- **"Add label urgent to PROJ-123"** → `cojira jira update PROJ-123 --set labels+=urgent --dry-run`
-- **"Change priority to High"** → `cojira jira update PROJ-123 --set priority:=High --dry-run`
-- **"Move PROJ-123 to Done"** → `cojira jira transition PROJ-123 --to "Done" --dry-run`
-- **"Move all open bugs to Done"** → `cojira jira bulk-transition --jql 'project = FOO AND type = Bug AND status != Done' --to "Done" --dry-run`
-- **"Find all open bugs in FOO"** → `cojira jira search 'project = FOO AND type = Bug AND status != Done' --output-mode summary`
-- **"Save search results to a file"** → `cojira jira search 'project = FOO' -o results.json`
-- **"Show me the board"** → `cojira jira board-issues <board-id-or-url> --output-mode summary`
-- **"Show me all issues on the board"** → `cojira jira board-issues <board-id-or-url> --all --output-mode summary`
-- **"Create a new issue in FOO"** → write a JSON payload, then `cojira jira create payload.json`
-- **"List available transitions"** → `cojira jira transitions PROJ-123`
-- **"What fields are available?"** → `cojira jira fields --query <term>`
-- **"Validate this payload"** → `cojira jira validate payload.json`
-- **"Rename issues in bulk"** → `cojira jira bulk-update-summaries --file map.csv --dry-run`
-- **"Bulk update issues"** → `cojira jira bulk-update --jql '...' --payload p.json --dry-run`
-- **"Run a batch of operations"** → `cojira jira batch config.json --dry-run`
-- **"Sync issues to disk"** → `cojira jira sync --project PROJ`
-- **"Sync from local folders"** → `cojira jira sync-from-dir --root ./tickets --dry-run`
-- **"Parse this intent"** → `cojira do "move PROJ-123 to Done"`
-- **"What fields are on the board detail view?"** → `cojira jira --experimental board-detail-view get <board> --output-mode json`
-- **"Find a board detail view field ID"** → `cojira jira --experimental board-detail-view search-fields <board> --query "epic" --output-mode json`
-- **"Configure the board detail view"** → export → edit → `cojira jira --experimental board-detail-view apply <board> --file fields.json --dry-run`
-- **"Show me the board swimlanes"** → `cojira jira --experimental board-swimlanes get <board> --output-mode json`
-- **"Validate swimlane queries"** → `cojira jira --experimental board-swimlanes validate <board> --output-mode summary`
-- **"Simulate swimlane routing"** → `cojira jira --experimental board-swimlanes simulate <board> --output-mode summary`
-- **"Who am I logged in as?"** → `cojira jira whoami --output-mode summary`
-- **"Add a comment to PROJ-123"** → **Not supported** (say so)
-
-### Confluence
-
-- **"Read this Confluence page"** → `cojira confluence info <page> --output-mode summary` or `cojira confluence get <page>`
-- **"Update Confluence page <URL> to include X"** → `get` → edit XHTML → `update`
-- **"Find Confluence pages titled X"** → `cojira confluence find "X" --output-mode summary`
-- **"Copy this Confluence tree"** → `cojira confluence copy-tree <page> <parent> --dry-run`
-- **"Archive this Confluence page"** → `cojira confluence archive <page> --to-parent <parent> --dry-run`
-- **"Create a new page"** → `cojira confluence create "Title" -s SPACE -f content.html`
-- **"Rename this page"** → `cojira confluence rename <page> "New Title"`
-- **"Move this page under another"** → `cojira confluence move <page> <parent>`
-- **"Show the page tree"** → `cojira confluence tree <page> -d 5`
-- **"Run batch operations"** → `cojira confluence batch config.json --dry-run`
-- **"Validate this XHTML"** → `cojira confluence validate page.html`
-
-## Not supported
-
-If the user asks for any of these, tell them clearly that it's not available yet.
-
-### Jira
-
-Comments, watchers, issue links (blocks/relates-to/duplicates), attachments, worklogs, sprints, board columns/column mapping, filters, dashboards, project administration, user management (beyond `whoami`), components, versions/releases, clone/duplicate issues.
-
-### Confluence
-
-Delete pages (use `archive` instead), page permissions/restrictions, attachments, labels (as a dedicated command), space administration, page history/version comparison, templates, blog posts, content properties, watchers, export to PDF/Word.
-
-## Presenting results to users
-
-When relaying cojira output to the user, follow these patterns:
-
-- **Single issue**: State key fields in a sentence — "PROJ-123 is In Progress, assigned to John, priority High."
-- **Search results**: Summarize count and list the top items — "Found 12 open bugs. Here are the first few: ..."
-- **Confluence page**: Title, space, last modified — "Page 'Release Notes' in TEAM space, last updated by Jane on Feb 10."
-- **Transitions**: Confirm the change — "Moved PROJ-123 from In Progress to Done."
-- **Updates**: Confirm what changed — "Updated PROJ-123: added label 'urgent', changed priority from Medium to High."
-- **Bulk operations**: Summarize — "Updated 15 issues" or "Transitioned 8 issues to Done."
-- **Board issues**: Group by status column — "Board has 42 issues: 10 To Do, 25 In Progress, 7 Done."
-- **Errors**: Use the `user_message` from the error response, never the raw error code or technical message.
-
----
-
-## Command cheatsheet
-
-### Meta Commands
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `describe` | Agent capabilities and live checks | `cojira describe --with-context --output-mode json` |
-| `describe --agent-prompt` | Compact text prompt for system prompts | `cojira describe --agent-prompt` |
-| `doctor` | Diagnose connection/auth issues | `cojira doctor` |
-| `init` | Interactive setup wizard | `cojira init` |
-| `bootstrap` | Generate workspace templates | `cojira bootstrap` |
-| `plan` | Preview any command without applying | `cojira plan jira update PROJ-123 --set labels+=urgent` |
-| `do` | Natural-language intent parser | `cojira do "move PROJ-123 to Done"` |
-
-### Confluence Commands
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `info` | Show page metadata | `cojira confluence info 12345 --output-mode json` |
-| `get` | Download page content (XHTML) | `cojira confluence get 12345 -o page.html` |
-| `update` | Update page from XHTML file | `cojira confluence update 12345 page.html` |
-| `create` | Create new page | `cojira confluence create "Title" -s SPACE -f content.html` |
-| `rename` | Rename a page | `cojira confluence rename 12345 "New Title"` |
-| `move` | Move page to new parent | `cojira confluence move 12345 67890` |
-| `tree` | Show page hierarchy | `cojira confluence tree 12345 -d 5` |
-| `find` | Search pages by title/CQL | `cojira confluence find "search term" -s SPACE` |
-| `copy-tree` | Duplicate a page tree | `cojira confluence copy-tree <page> <parent> --dry-run` |
-| `archive` | Archive a page (move + label) | `cojira confluence archive <page> --to-parent <parent> --dry-run` |
-| `validate` | Sanity-check XHTML file | `cojira confluence validate page.html` |
-| `batch` | Run batch operations | `cojira confluence batch config.json --dry-run` |
-
-### Jira Commands
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| `info` | Show issue metadata | `cojira jira info PROJ-123 --output-mode json` |
-| `get` | Fetch full issue JSON | `cojira jira get PROJ-123 -o issue.json` |
-| `update` | Update issue fields | `cojira jira update PROJ-123 --set summary="New" --dry-run` |
-| `create` | Create issue from JSON | `cojira jira create payload.json` |
-| `transition` | Change issue status | `cojira jira transition PROJ-123 --to "Done" --dry-run` |
-| `transitions` | List available transitions | `cojira jira transitions PROJ-123 --to "Done"` |
-| `search` | Query issues with JQL | `cojira jira search 'project=PROJ' -o results.json` |
-| `board-issues` | List issues on a board | `cojira jira board-issues <board-id-or-url>` |
-| `fields` | List available fields | `cojira jira fields --query priority` |
-| `whoami` | Show current user | `cojira jira whoami` |
-| `validate` | Sanity-check JSON payload | `cojira jira validate payload.json` |
-| `batch` | Run batch operations | `cojira jira batch config.json --dry-run` |
-| `bulk-update` | Update multiple issues | `cojira jira bulk-update --jql '...' --payload p.json --dry-run` |
-| `bulk-transition` | Transition multiple issues | `cojira jira bulk-transition --jql '...' --to "Done" --dry-run` |
-| `bulk-update-summaries` | Bulk rename from CSV/JSON | `cojira jira bulk-update-summaries --file map.csv` |
-| `sync` | Download issues to disk | `cojira jira sync --project PROJ` |
-| `sync-from-dir` | Update issues from local folders | `cojira jira sync-from-dir --root ./tickets` |
-| `board-swimlanes` | (EXP) Manage board swimlanes via internal Jira APIs | `cojira jira --experimental board-swimlanes get 45434` |
-| `board-detail-view` | (EXP) Manage board detail view fields via internal Jira APIs | `cojira jira --experimental board-detail-view get 45434` |
-
-### Quick field updates (--set flag)
-
-The `update` command supports inline field changes without a JSON payload:
-
-```bash
-cojira jira update PROJ-123 --set summary="New title" --dry-run
-cojira jira update PROJ-123 --set labels+=urgent --dry-run       # append to list
-cojira jira update PROJ-123 --set labels-=stale --dry-run        # remove from list
-cojira jira update PROJ-123 --set priority:=High --dry-run       # set object field
-```
-
----
-
-## Flexible identifiers
-
-Both tools accept multiple identifier formats:
-
-**Confluence pages:**
-- Numeric ID: `12345`
-- URL: `https://confluence.rakuten-it.com/confluence/pages/viewpage.action?pageId=12345`
-- URL: `https://confluence.rakuten-it.com/confluence/display/SPACE/Page+Title`
-- Tiny link code: `APnAVAE`
-- Space:Title: `SPACE:"My Page Title"`
-
-**Jira issues:**
-- Issue key: `PROJ-123`
-- Numeric ID: `10001`
-- URL: `https://jira.rakuten-it.com/jira/browse/PROJ-123`
-
-**Jira boards:**
-- Board ID: `12345`
-- URL: `https://jira.rakuten-it.com/jira/secure/RapidBoard.jspa?rapidView=12345`
-
----
-
-## Common workflows
-
-### Edit a Confluence page (lossless)
-
-```bash
-# 1. Download the page
-cojira confluence get 12345 -o page.html
-
-# 2. Edit page.html (preserve all <ac:...> and <ri:...> macros!)
-
-# 3. Upload changes
-cojira confluence update 12345 page.html
-
-# 4. Verify
-cojira confluence info 12345 --output-mode json
-```
-
-### Update a Jira issue safely
-
-```bash
-# Preview changes first
-cojira jira update PROJ-123 --set summary="New title" --diff
-cojira jira update PROJ-123 --set summary="New title" --dry-run
-
-# Apply if preview looks good
-cojira jira update PROJ-123 --set summary="New title"
-```
-
-### Bulk update Jira issues
-
-```bash
-# Create payload file (see examples/jira-update-payload.json)
-cat > update.json << 'EOF'
-{"fields": {"labels": ["bulk-updated"]}}
-EOF
-
-# Preview
-cojira jira bulk-update --jql 'project = PROJ AND status = "Open"' --payload update.json --dry-run
-
-# Apply with rate limiting
-cojira jira bulk-update --jql 'project = PROJ AND status = "Open"' --payload update.json --sleep 0.5
-```
-
-### Bulk transition issues
-
-```bash
-# Preview
-cojira jira bulk-transition --jql 'project = PROJ AND status = "Open"' --to "In Progress" --dry-run
-
-# Apply
-cojira jira bulk-transition --jql 'project = PROJ AND status = "Open"' --to "In Progress" --sleep 0.5
-```
-
-### Transition an issue to a new status
-
-```bash
-# Shorthand: transition by status name (finds the right transition ID automatically)
-cojira jira transition PROJ-123 --to "Done" --dry-run
-cojira jira transition PROJ-123 --to "Done"
-
-# Or find the transition ID manually
-cojira jira transitions PROJ-123 --to "Done"
-cojira jira transition PROJ-123 31
-```
-
-### List issues on a board
-
-```bash
-cojira jira board-issues 45434 --output-mode summary
-cojira jira board-issues 45434 --all --output-mode summary
-cojira jira board-issues 45434 --all --max-issues 5000 --output-mode summary
-cojira jira board-issues 'https://jira.rakuten-it.com/jira/secure/RapidBoard.jspa?rapidView=45434' -o board.json
-```
-
----
-
-### Experimental board configuration (requires `--experimental`)
-
-These commands use internal GreenHopper REST APIs and require board administration permission.
-
-#### Board Issue Detail View fields
-
-```bash
-# See current fields
-cojira jira --experimental board-detail-view get <board> --output-mode json
-
-# Search available fields (avoids dumping the full list)
-cojira jira --experimental board-detail-view search-fields <board> --query "epic" --output-mode json
-
-# See current + available fields
-cojira jira --experimental board-detail-view get <board> --include-available --output-mode json
-
-# Export current config to file
-cojira jira --experimental board-detail-view export <board> -o detail-view.json
-
-# Apply desired config (preview first)
-cojira jira --experimental board-detail-view apply <board> --file detail-view.json --dry-run
-cojira jira --experimental board-detail-view apply <board> --file detail-view.json
-
-# Apply and remove fields not in file
-cojira jira --experimental board-detail-view apply <board> --file detail-view.json --delete-missing --dry-run
-```
-
-**Config file format** (output of `export`, input for `apply`):
-```json
-{"fields": [{"fieldId": "priority", "name": "Priority", "category": "System"}]}
-```
-
-Or simpler:
-```json
-{"fieldIds": ["priority", "status", "assignee"]}
-```
-
-#### Board swimlanes
-
-```bash
-cojira jira --experimental board-swimlanes get <board> --output-mode json
-cojira jira --experimental board-swimlanes export <board> -o swimlanes.json
-cojira jira --experimental board-swimlanes validate <board> --file swimlanes.json --sleep 0.5 --output-mode json
-cojira jira --experimental board-swimlanes simulate <board> --sleep 0.5 --output-mode json
-cojira jira --experimental board-swimlanes apply <board> --file swimlanes.json --dry-run
-cojira jira --experimental board-swimlanes set-strategy <board> --strategy custom
-cojira jira --experimental board-swimlanes add <board> --name "P0" --query "priority = Highest"
-cojira jira --experimental board-swimlanes delete <board> <id>
-cojira jira --experimental board-swimlanes move <board> <id> --first
-```
-
----
-
-## JQL tips
-
-- Always use **single quotes** around JQL to avoid shell issues with `!=`:
-  ```bash
-  cojira jira search 'statusCategory != Done'
-  ```
-- cojira auto-fixes common shell mangling (e.g. `\!` → `!`), but single quotes prevent it entirely.
-
----
-
-## Networking flags
-
-For large operations or flaky networks:
-
-```bash
-cojira confluence --timeout 60 --retries 8 --debug tree 12345 -d 5
-cojira jira --timeout 60 --retries 8 bulk-update --jql '...' --payload p.json --sleep 1.0
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--timeout` | 30 | HTTP timeout in seconds |
-| `--retries` | 5 | Retry count for 429/5xx errors |
-| `--retry-base-delay` | 0.5 | Initial backoff delay (seconds) |
-| `--retry-max-delay` | 8.0 | Maximum backoff delay (seconds) |
-| `--debug` | off | Print retry attempts to stderr |
-
----
-
-## Payload examples
-
-See the `examples/` directory for ready-to-use templates:
-
-| File | Purpose |
-|------|---------|
-| `jira-create-payload.json` | Create a new Jira issue |
-| `jira-update-payload.json` | Update Jira issue fields |
-| `jira-batch-config.json` | Batch create/update/transition operations |
-| `jira-bulk-summaries.json` | JSON mapping for bulk summary updates |
-| `jira-bulk-summaries.csv` | CSV mapping for bulk summary updates |
-| `confluence-batch-config.json` | Batch Confluence operations |
-| `confluence-page-content.html` | Sample Confluence XHTML with macros |
-
----
-
-## Troubleshooting
-
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `401 Unauthorized` | Bad token, or `JIRA_EMAIL` set with PAT | Regenerate token; if using PAT, remove `JIRA_EMAIL` or set `JIRA_AUTH_MODE=bearer` |
-| `403 Forbidden` | No permission | Verify account has access to the resource |
-| `404 Not Found` | Wrong base URL (missing context path) | Ensure `JIRA_BASE_URL` includes context path (e.g. `/jira`). Re-run `cojira init`. |
-| `409 Conflict` | Version conflict | Retry (built-in for move/batch); fetch latest version first |
-| Macros lost after update | Converted to Markdown | Always edit as XHTML; never convert Confluence storage format |
-
-Run `cojira doctor` for automated diagnostics with actionable hints.
-
----
-
-## Exit codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | Success |
-| 1 | Operation failed (API error, file not found, etc.) |
-| 2 | Usage error (missing args, bad config) |
-| 3 | Needs user interaction (TTY required, interactive mode required) |
-
----
-
-## Error codes reference
-
-When consuming JSON output, errors include a `code` field. Here are all recognized codes:
-
-| Code | User-facing message | Recovery |
-|------|---------------------|----------|
-| `CONFIG_MISSING_ENV` | Setup is incomplete. Run `cojira init` and paste your URL and token. | run: `cojira init` |
-| `CONFIG_INVALID` | Your configuration looks invalid. Re-run `cojira init`. | run: `cojira init` |
-| `CONFIG_ERROR` | There's a problem with your configuration. | run: `cojira doctor` |
-| `HTTP_401` | Your token doesn't have permission. Create a new token with the right access. | run: `cojira init` |
-| `HTTP_403` | Your token doesn't have permission. Create a new token with the right access. | run: `cojira init` |
-| `HTTP_404` | The URL returned 'not found'. Check that the base URL includes any context path. | run: `cojira init` |
-| `HTTP_429` | Jira asked us to slow down (rate limit). Wait and try again. | retry: wait |
-| `HTTP_ERROR` | Something went wrong talking to the server. Try again in a moment. | — |
-| `TIMEOUT` | The request timed out. Try again or check your network connection. | retry: `--timeout 60` |
-| `IDENT_UNRESOLVED` | I couldn't find that item. Share a full URL or ID and try again. | retry: use full URL |
-| `FETCH_FAILED` | I couldn't retrieve that item. Check the ID/URL and try again. | retry |
-| `UPDATE_FAILED` | The update didn't go through. The page may have been edited by someone else. | retry: fetch latest first |
-| `CREATE_FAILED` | I couldn't create that item. Check your permissions. | check: `cojira doctor` |
-| `TRANSITION_FAILED` | I couldn't change the status. The transition may not be allowed from the current state. | run: `cojira jira transitions {issue}` |
-| `AMBIGUOUS_TRANSITION` | Multiple transitions matched that status. Pick a specific transition ID. | run: `cojira jira transitions {issue}` |
-| `TRANSITION_NOT_FOUND` | That status transition isn't available for this issue. | run: `cojira jira transitions {issue}` |
-| `FILE_NOT_FOUND` | I couldn't find the file you referenced. Check the path. | check: verify file path |
-| `INVALID_JSON` | That JSON file isn't valid. Fix the file and retry. | check: validate JSON |
-| `EMPTY_CONTENT` | The content is empty. Provide some content and try again. | — |
-| `MOVE_FAILED` | I couldn't move that page. Check permissions and target parent. | retry |
-| `RENAME_FAILED` | I couldn't rename that page. The title may already be taken. | retry: check title |
-| `SEARCH_FAILED` | The search didn't work. Check your query syntax. | retry: check syntax |
-| `LABEL_FAILED` | I couldn't update the labels. Check permissions. | retry |
-| `COPY_FAILED` | The copy operation failed. Some pages may not have been copied. | retry |
-| `INVALID_TITLE` | That page title isn't valid. | — |
-| `COPY_LIMITATION` | Some items couldn't be copied due to Confluence limitations. | — |
-| `OP_FAILED` | *(passes raw message if ≤160 chars)* | — |
-| `UNSUPPORTED` | That operation isn't supported yet. | — |
-| `ERROR` | Something unexpected went wrong. | run: `cojira doctor` |
-| `MISSING_DEP` | A required package is missing. | run: `go install github.com/notabhay/cojira@latest` |
-
----
-
-## .cojira.json (project defaults)
-
-Optional file in CWD or repo root. Sets defaults to reduce repeated flags.
+Optional file in the working directory or repo root:
 
 ```json
 {
@@ -495,4 +170,324 @@ Optional file in CWD or repo root. Sets defaults to reduce repeated flags.
 }
 ```
 
-All fields are optional. `aliases` map shortcut names to full cojira commands (max 3 levels of alias expansion).
+## Safety rules
+
+Always follow these rules:
+
+- Never print or paste tokens.
+- Never commit `.env`.
+- Confluence content is storage-format XHTML. Do not convert it through Markdown or strip `<ac:...>` / `<ri:...>` macros.
+- Preview multi-item or destructive work with `--dry-run` first.
+- Use `cojira plan <tool> <command> ...` when you want preview-first behavior from outside the command.
+- Use single quotes around JQL to avoid shell mangling of operators such as `!=`.
+- Treat Jira board configuration commands as experimental and potentially brittle across Jira upgrades.
+- Prefer full URLs, numeric IDs, or explicit keys when identifier resolution is ambiguous.
+
+## Agent behavior rules
+
+- You run `cojira`. Do not ask the user to run CLI commands for you.
+- Keep user-facing replies non-technical.
+- Do not show raw CLI commands, flags, JQL, XHTML, JSON envelopes, or exit codes in normal user replies.
+- Summarize results in plain language.
+- Use `--output-mode summary` or `--output-mode human` for user-facing read operations unless you need machine-readable follow-up data.
+- Use `--output-mode json` when you need structured data for another step.
+- Be honest about unsupported features. Do not imply the CLI can do something it cannot do.
+
+## Command surface
+
+### Top-level commands
+
+| Command | Purpose | Example |
+| --- | --- | --- |
+| `bootstrap` | Write the bootstrap guide and example templates | `cojira bootstrap --output /tmp/cojira/COJIRA-BOOTSTRAP.md --force` |
+| `completion` | Generate shell completion | `cojira completion zsh` |
+| `confluence` | Confluence page management | `cojira confluence --help` |
+| `describe` | Machine-readable capability and context report | `cojira describe --with-context --output-mode json` |
+| `do` | Intent parsing into a concrete command | `cojira do "move PROJ-123 to Done"` |
+| `doctor` | Setup and connectivity diagnostics | `cojira doctor` |
+| `init` | Interactive setup wizard | `cojira init` |
+| `jira` | Jira issue and board automation | `cojira jira --help` |
+| `plan` | Preview any command without applying it | `cojira plan jira update PROJ-123 --set labels+=urgent` |
+
+### Jira commands
+
+| Command | Purpose | Example |
+| --- | --- | --- |
+| `batch` | Run batch Jira operations from a file or stdin | `cojira jira batch ops.json --dry-run` |
+| `board-detail-view` | Experimental Issue Detail View management | `cojira jira --experimental board-detail-view get 45434 --output-mode json` |
+| `board-issues` | List issues on a board | `cojira jira board-issues 45434 --output-mode summary` |
+| `board-swimlanes` | Experimental swimlane configuration | `cojira jira --experimental board-swimlanes get 45434 --output-mode json` |
+| `bulk-transition` | Transition many issues matched by JQL | `cojira jira bulk-transition --jql 'project = PROJ AND status != Done' --to "Done" --dry-run` |
+| `bulk-update` | Apply one JSON payload to many issues | `cojira jira bulk-update --jql 'project = PROJ' --payload update.json --dry-run` |
+| `bulk-update-summaries` | Rename many issues from CSV or JSON | `cojira jira bulk-update-summaries --file map.csv --dry-run` |
+| `create` | Create an issue from JSON | `cojira jira create payload.json` |
+| `delete` | Delete an issue | `cojira jira delete PROJ-123 --dry-run` |
+| `fields` | Search available fields | `cojira jira fields --query priority --output-mode json` |
+| `get` | Fetch full issue JSON | `cojira jira get PROJ-123 -o issue.json` |
+| `info` | Show issue metadata | `cojira jira info PROJ-123 --output-mode summary` |
+| `raw` | Send an allowlisted Jira REST request | `cojira jira raw GET /rest/api/2/issue/PROJ-123` |
+| `search` | Search with JQL | `cojira jira search 'project = PROJ AND status != Done' --output-mode summary` |
+| `sync` | Sync reporter issues to local folders | `cojira jira sync --project PROJ` |
+| `sync-from-dir` | Apply updates from ticket folders | `cojira jira sync-from-dir --root ./tickets --dry-run` |
+| `transition` | Transition one issue | `cojira jira transition PROJ-123 --to "Done" --dry-run` |
+| `transitions` | List transitions for an issue | `cojira jira transitions PROJ-123` |
+| `update` | Update issue fields | `cojira jira update PROJ-123 --set labels+=urgent --dry-run` |
+| `validate` | Validate Jira JSON payload shape | `cojira jira validate payload.json` |
+| `whoami` | Show the current Jira identity | `cojira jira whoami --output-mode summary` |
+
+### Confluence commands
+
+| Command | Purpose | Example |
+| --- | --- | --- |
+| `archive` | Archive a page under an archive parent | `cojira confluence archive 12345 --to-parent 67890 --dry-run` |
+| `batch` | Run batch Confluence operations | `cojira confluence batch ops.json --dry-run` |
+| `comments` | List page comments with inline context | `cojira confluence comments 12345 --output-mode summary` |
+| `copy-tree` | Copy a page tree under a new parent | `cojira confluence copy-tree 12345 67890 --dry-run` |
+| `create` | Create a page from XHTML | `cojira confluence create "Title" -s TEAM -f page.html` |
+| `find` | Search by title or CQL | `cojira confluence find "Release Notes" --output-mode summary` |
+| `get` | Download storage-format XHTML | `cojira confluence get 12345 -o page.html` |
+| `info` | Show page metadata | `cojira confluence info 12345 --output-mode summary` |
+| `move` | Move a page to a new parent | `cojira confluence move 12345 67890 --dry-run` |
+| `raw` | Send a read-only Confluence REST request | `cojira confluence raw GET /rest/api/content/12345` |
+| `rename` | Rename a page | `cojira confluence rename 12345 "New Title" --dry-run` |
+| `tree` | Show page hierarchy | `cojira confluence tree 12345 -d 5 --output-mode summary` |
+| `update` | Update a page from XHTML | `cojira confluence update 12345 page.html --diff` |
+| `validate` | Validate storage-format XHTML | `cojira confluence validate page.html` |
+| `view` | Fetch rendered HTML for reading | `cojira confluence view 12345 --output-mode summary` |
+
+## Intent phrasebook
+
+### Jira intent mapping
+
+- "What's the status of PROJ-123?" -> `cojira jira info PROJ-123 --output-mode summary`
+- "Show me details for PROJ-123" -> `cojira jira info PROJ-123 --output-mode summary` or `cojira jira get PROJ-123`
+- "Add label urgent to PROJ-123" -> `cojira jira update PROJ-123 --set labels+=urgent --dry-run`
+- "Change priority to High" -> `cojira jira update PROJ-123 --set priority:=High --dry-run`
+- "Move PROJ-123 to Done" -> `cojira jira transition PROJ-123 --to "Done" --dry-run`
+- "Move all open bugs to Done" -> `cojira jira bulk-transition --jql 'project = FOO AND type = Bug AND status != Done' --to "Done" --dry-run`
+- "Find all open bugs in FOO" -> `cojira jira search 'project = FOO AND type = Bug AND status != Done' --output-mode summary`
+- "Save search results to a file" -> `cojira jira search 'project = FOO' -o results.json`
+- "Show me the board" -> `cojira jira board-issues <board-id-or-url> --output-mode summary`
+- "Show me all issues on the board" -> `cojira jira board-issues <board-id-or-url> --all --output-mode summary`
+- "Create a new issue in FOO" -> write a JSON payload, then run `cojira jira create payload.json`
+- "List available transitions" -> `cojira jira transitions PROJ-123`
+- "What fields are available?" -> `cojira jira fields --query <term>`
+- "Validate this payload" -> `cojira jira validate payload.json`
+- "Rename issues in bulk" -> `cojira jira bulk-update-summaries --file map.csv --dry-run`
+- "Bulk update issues" -> `cojira jira bulk-update --jql '...' --payload payload.json --dry-run`
+- "Run a batch of operations" -> `cojira jira batch config.json --dry-run`
+- "Sync issues to disk" -> `cojira jira sync --project PROJ`
+- "Sync from local folders" -> `cojira jira sync-from-dir --root ./tickets --dry-run`
+- "Parse this intent" -> `cojira do "move PROJ-123 to Done"`
+- "What fields are on the board detail view?" -> `cojira jira --experimental board-detail-view get <board> --output-mode json`
+- "Find a board detail view field ID" -> `cojira jira --experimental board-detail-view search-fields <board> --query "epic" --output-mode json`
+- "Configure the board detail view" -> export -> edit -> `cojira jira --experimental board-detail-view apply <board> --file fields.json --dry-run`
+- "Show me the board swimlanes" -> `cojira jira --experimental board-swimlanes get <board> --output-mode json`
+- "Validate swimlane queries" -> `cojira jira --experimental board-swimlanes validate <board> --file swimlanes.json --output-mode summary`
+- "Simulate swimlane routing" -> `cojira jira --experimental board-swimlanes simulate <board> --output-mode summary`
+- "Who am I logged in as?" -> `cojira jira whoami --output-mode summary`
+- "Delete PROJ-123" -> `cojira jira delete PROJ-123 --dry-run`
+- "Add a comment to PROJ-123" -> unsupported; say so clearly
+
+### Confluence intent mapping
+
+- "Read this Confluence page" -> `cojira confluence info <page> --output-mode summary` or `cojira confluence get <page>`
+- "Update Confluence page <URL> to include X" -> `get` -> edit XHTML -> `update`
+- "Find Confluence pages titled X" -> `cojira confluence find "X" --output-mode summary`
+- "Copy this Confluence tree" -> `cojira confluence copy-tree <page> <parent> --dry-run`
+- "Archive this Confluence page" -> `cojira confluence archive <page> --to-parent <parent> --dry-run`
+- "Create a new page" -> `cojira confluence create "Title" -s SPACE -f content.html`
+- "Rename this page" -> `cojira confluence rename <page> "New Title" --dry-run`
+- "Move this page under another" -> `cojira confluence move <page> <parent> --dry-run`
+- "Show the page tree" -> `cojira confluence tree <page> -d 5 --output-mode summary`
+- "Show me the comments on this page" -> `cojira confluence comments <page> --output-mode summary`
+- "Run batch operations" -> `cojira confluence batch config.json --dry-run`
+- "Validate this XHTML" -> `cojira confluence validate page.html`
+
+## Flexible identifiers
+
+### Confluence
+
+- numeric page id: `12345`
+- full URL: `https://confluence.example.com/confluence/pages/viewpage.action?pageId=12345`
+- display URL: `https://confluence.example.com/confluence/display/SPACE/Page+Title`
+- tiny link code: `APnAVAE`
+- `SPACE:"Page Title"`
+
+### Jira
+
+- issue key: `PROJ-123`
+- numeric issue id: `10001`
+- full URL: `https://jira.example.com/jira/browse/PROJ-123`
+
+### Jira boards
+
+- board id: `45434`
+- board URL: `https://jira.example.com/jira/secure/RapidBoard.jspa?rapidView=45434`
+
+## Resumable partial failures
+
+`copy-tree`, `jira batch`, `confluence batch`, `bulk-update`, `bulk-transition`, and `bulk-update-summaries` can now emit machine-readable `resumable_state` on partial failure.
+
+The important contract is:
+
+- the command snapshots the original plan on first execution,
+- each successful item gets a checkpoint,
+- partial failure returns `resumable_state`,
+- rerunning the same command with the emitted `--idempotency-key` resumes from the frozen snapshot instead of replaying completed items.
+
+Expected `resumable_state` fields:
+
+- `version`
+- `kind`
+- `idempotency_key`
+- `request_id`
+- `target`
+- `snapshot`
+- `completed`
+- `remaining`
+- `resume_hint`
+- `notes`
+
+Operational rule:
+
+- if a multi-item mutation fails part-way, read `resumable_state.idempotency_key` from JSON output and rerun the same command with `--idempotency-key <that-key>`.
+
+## Common workflows
+
+### Safe Jira issue update
+
+```bash
+cojira jira update PROJ-123 --set summary="New title" --dry-run
+cojira jira update PROJ-123 --set summary="New title"
+```
+
+### Safe bulk Jira transition
+
+```bash
+cojira jira bulk-transition --jql 'project = PROJ AND status != Done' --to "Done" --dry-run
+cojira jira bulk-transition --jql 'project = PROJ AND status != Done' --to "Done" --sleep 0.5
+```
+
+### Safe Confluence edit
+
+```bash
+cojira confluence get 12345 -o page.html
+cojira confluence validate page.html
+cojira confluence update 12345 page.html --diff
+cojira confluence update 12345 page.html
+```
+
+### Safe Confluence tree copy
+
+```bash
+cojira confluence copy-tree 12345 67890 --dry-run
+cojira confluence copy-tree 12345 67890 --idempotency-key copy-12345-67890
+```
+
+### Network tuning for large operations
+
+```bash
+cojira jira --timeout 60 --retries 8 bulk-update --jql 'project = PROJ' --payload update.json --sleep 0.5
+cojira confluence --timeout 60 tree 12345 -d 5
+```
+
+## Unsupported features and what to do instead
+
+### Jira
+
+Unsupported:
+
+- comments
+- watchers
+- issue links
+- attachments
+- worklogs
+- sprints
+- board columns or column mapping
+- filters
+- dashboards
+- project administration
+- user management beyond `whoami`
+- components
+- versions or releases
+- clone or duplicate issue flows
+
+Do instead:
+
+- use field updates, transitions, board reads, or raw allowlisted reads when those meet the need,
+- say clearly when the requested action is unsupported.
+
+### Confluence
+
+Unsupported:
+
+- permanent delete
+- page restrictions or permissions
+- attachments
+- dedicated label-management commands
+- space administration
+- page history or version diff commands
+- templates
+- blog posts
+- content properties
+- watchers
+- export to PDF or Word
+
+Do instead:
+
+- use `archive` instead of delete,
+- use `comments`, `tree`, `find`, `get`, `view`, `move`, `rename`, `update`, and `copy-tree` where applicable,
+- say clearly when the requested action is unsupported.
+
+## Error codes and recovery
+
+| Code | Meaning | Recovery |
+| --- | --- | --- |
+| `CONFIG_MISSING_ENV` | Required setup is missing | run `cojira init` or write `.env` / global credentials |
+| `CONFIG_INVALID` | `.env`, `.cojira.json`, or input config is invalid | correct the file and rerun; `cojira doctor` helps |
+| `HTTP_ERROR` | Generic HTTP failure | retry after checking connectivity and base URLs |
+| `HTTP_401` | Authentication failed | replace token or remove mismatched `JIRA_EMAIL` when using bearer/PAT |
+| `HTTP_403` | Permission denied | verify the token and resource permissions |
+| `HTTP_404` | Not found | confirm identifiers and base URL, including any Jira context path |
+| `HTTP_429` | Rate limited | retry with backoff or lower concurrency |
+| `TIMEOUT` | Request timed out | retry with a larger `--timeout` |
+| `IDENT_UNRESOLVED` | Identifier could not be resolved | use a full URL, numeric id, or explicit key |
+| `FETCH_FAILED` | Read failed | retry after confirming the target exists |
+| `UPDATE_FAILED` | Update failed | fetch latest state, preview again, and retry |
+| `CREATE_FAILED` | Create failed | validate payload or permissions, then retry |
+| `TRANSITION_FAILED` | Transition failed | inspect available transitions and retry |
+| `FILE_NOT_FOUND` | Referenced file is missing | fix the path and rerun |
+| `INVALID_JSON` | JSON payload is invalid | fix the JSON or run a validate command first |
+| `OP_FAILED` | Generic operation failure | read the message and retry with the recommended hint |
+| `UNSUPPORTED` | Requested operation is unsupported | use a supported alternative or say so explicitly |
+| `CONFIG_ERROR` | General configuration failure | run `cojira doctor` |
+| `ERROR` | Unexpected failure | retry or inspect `cojira doctor` output |
+| `EMPTY_CONTENT` | Refusing to write empty Confluence content | provide non-empty storage XHTML |
+| `MOVE_FAILED` | Confluence move failed | verify permissions and target parent |
+| `RENAME_FAILED` | Rename failed | retry with a valid, unique title |
+| `SEARCH_FAILED` | Search failed | correct the query and retry |
+| `LABEL_FAILED` | Label change failed | verify permissions and retry |
+| `COPY_FAILED` | Copy operation failed | inspect `resumable_state` and rerun with the emitted idempotency key |
+| `INVALID_TITLE` | Page title is invalid | fix the title and retry |
+| `COPY_LIMITATION` | Confluence refused part of a copy flow | inspect warnings, then resume or repair manually |
+| `AMBIGUOUS_TRANSITION` | More than one transition matched | choose a specific transition id |
+| `TRANSITION_NOT_FOUND` | Requested transition is unavailable | run `cojira jira transitions <issue>` |
+| `MISSING_DEP` | Required local dependency is missing | install the missing dependency or rebuild `cojira` |
+
+## User-facing response rules
+
+When you report back to the user:
+
+- summarize the outcome in plain language,
+- mention the affected Jira issues or Confluence pages,
+- describe what changed or what blocked the change,
+- never paste tokens, raw JQL, raw JSON envelopes, or storage XHTML unless the user explicitly asks for that technical detail.
+
+Examples:
+
+- single Jira issue: "PROJ-123 is In Progress, assigned to Alex, priority High."
+- Jira search: "Found 12 open bugs. The most urgent are PROJ-1, PROJ-7, and PROJ-11."
+- Confluence page: "The page is in TEAM space and was last updated yesterday by Priya."
+- mutation: "I added the label and left everything else unchanged."
+- partial failure: "Some items were updated and some were not. I can resume safely from the saved checkpoint."

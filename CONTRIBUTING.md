@@ -1,129 +1,148 @@
 # Contributing
 
-This repository is small enough that every structural decision matters. The goal is not to create the biggest Atlassian CLI; the goal is to keep `cojira` dependable for agent-driven workflows where mistakes are expensive and debugging is often happening through another tool’s terminal.
+`cojira` is small enough that structural discipline matters.
+It is not trying to be every Atlassian integration under the sun; it is trying to be a dependable operational CLI that other agents can trust when the cost of a wrong mutation is real.
 
 ## Working Principles
 
-- Keep the command surface explicit. Prefer a small, well-documented command tree over magical behavior.
-- Keep mutations previewable. If a command changes Jira or Confluence state, it should be easy to inspect what will happen before applying it.
-- Preserve Confluence fidelity. Storage-format XHTML is the source of truth; do not normalize it through Markdown or lossy transforms.
-- Keep the dependency footprint lean. Reach for the standard library first.
-- Make agent behavior observable. Structured JSON output, stable error codes, and actionable diagnostics are part of the product, not polish.
+- Keep the command surface explicit.
+- Keep mutations previewable.
+- Preserve Confluence fidelity.
+- Keep the dependency footprint lean.
+- Treat output contracts, error codes, and diagnostics as product surface, not polish.
+- Make multi-item operations resumable instead of best-effort replay.
 
 ## Prerequisites
 
-- Go 1.22 or newer for local builds.
-- `git` for normal source workflows.
-- `golangci-lint` if you want to run the same lint target used in CI locally.
-- Jira and Confluence credentials only if you need live end-to-end validation against real services. Most tests are local and use mocked HTTP servers.
+- Go 1.22 or newer
+- `git`
+- optional: `golangci-lint` if you want the same lint behavior as CI
+- Jira and Confluence credentials only when you need live end-to-end checks
 
-## Repository Layout
+## Repository Layout and Package Responsibilities
 
 | Path | Responsibility |
 | --- | --- |
-| [`main.go`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/main.go) | Root command assembly, dotenv bootstrap, top-level registration, and process exit handling |
-| [`install.sh`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/install.sh) | Curl-friendly installer that downloads source, ensures Go exists, builds the binary, and emits bootstrap assets |
-| [`internal/cli`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/cli) | Shared Cobra helpers: output-mode normalization, retry flags, plan/idempotency flags, root alias expansion |
-| [`internal/meta`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/meta) | Meta commands such as `describe`, `doctor`, `init`, `bootstrap`, `plan`, and `do` |
-| [`internal/jira`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/jira) | Jira client, identifier handling, command handlers, sync helpers, and Jira-specific validation |
-| [`internal/confluence`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/confluence) | Confluence client, identifier handling, page/tree workflows, XHTML validation, and Confluence batch flows |
-| [`internal/board`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/board) | Experimental Jira board configuration flows built on GreenHopper endpoints |
-| [`internal/dotenv`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/dotenv) | `.env` parsing, multi-source loading, placeholder detection, and credential provenance |
-| [`internal/config`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/config) | `.cojira.json` parsing, alias lookup, and project-default handling |
-| [`internal/httpclient`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/httpclient) | Shared retry and backoff behavior |
-| [`internal/output`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/output) | Envelope format, JSON helpers, output modes, receipts, and idempotency-key helpers |
-| [`internal/errors`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/errors) | Error codes, default messages, hints, and recovery metadata |
-| [`internal/idempotency`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/idempotency) | Local idempotency store and replay-prevention helpers |
-| [`internal/assets`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/assets) | Embedded bootstrap guide, env template, and example payload files used by `cojira bootstrap` |
-| [`dist/`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/dist) | Generated release artifacts |
-| [`.github/workflows/ci.yml`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/.github/workflows/ci.yml) | GitHub Actions workflow for vet, race tests, build, and lint |
-| [`.goreleaser.yml`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/.goreleaser.yml) | Release packaging and cross-platform build definition |
+| [`main.go`](main.go) | Root command assembly, dotenv bootstrap, top-level registration, and exit handling |
+| [`install.sh`](install.sh) | Curl installer that downloads source, ensures Go exists, builds the binary, and emits bootstrap assets |
+| [`internal/cli`](internal/cli) | Shared Cobra helpers, root alias expansion, output-mode normalization, retry flags, idempotency flags |
+| [`internal/meta`](internal/meta) | Meta commands: `describe`, `doctor`, `init`, `bootstrap`, `plan`, `do` |
+| [`internal/jira`](internal/jira) | Jira client, identifier handling, JQL helpers, command handlers, and sync flows |
+| [`internal/confluence`](internal/confluence) | Confluence client, identifier handling, XHTML validation, page/tree flows, and batch operations |
+| [`internal/board`](internal/board) | Experimental board-configuration features built on GreenHopper endpoints |
+| [`internal/dotenv`](internal/dotenv) | `.env` parsing, merged credential loading, provenance, placeholder detection |
+| [`internal/config`](internal/config) | `.cojira.json` parsing, aliases, and project defaults |
+| [`internal/httpclient`](internal/httpclient) | Shared retry and backoff behavior |
+| [`internal/output`](internal/output) | Structured envelopes, output modes, and related helpers |
+| [`internal/errors`](internal/errors) | Error codes, messages, hints, and recovery metadata |
+| [`internal/idempotency`](internal/idempotency) | Local idempotency store, checkpoints, and resumable-state helpers |
+| [`internal/assets`](internal/assets) | Embedded bootstrap guide, env template, and example payloads used by `cojira bootstrap` |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | GitHub Actions vet, race test, build, and lint workflow |
+| [`.goreleaser.yml`](.goreleaser.yml) | Release packaging and cross-platform build definition |
 
-## Local Development Workflow
+## Build and Test
 
-The shortest reliable loop is:
-
-```bash
-make build
-make test
-make test-race
-make vet
-```
-
-Equivalent direct commands:
+Primary loop:
 
 ```bash
 go build -o cojira .
 go test ./...
-go test -race ./...
 go vet ./...
+go test -race ./...
 ```
 
-Optional lint pass:
+Make wrappers:
 
 ```bash
+make build
+make test
+make vet
+make test-race
 make lint
 ```
 
-When you need a quick smoke test after a change:
+Quick smoke checks after structural changes:
 
 ```bash
 ./cojira --help
 ./cojira describe --output-mode json
+./cojira jira --help
+./cojira confluence --help
 ```
 
-## CI and Release Behavior
+## Architecture Notes Worth Preserving
 
-Current automation in this tree is intentionally simple:
-- [`.github/workflows/ci.yml`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/.github/workflows/ci.yml) runs `go vet ./...`, `go test -race ./...`, and `go build -o cojira .` on pushes and pull requests targeting `main`.
-- The same workflow runs `golangci-lint` in a separate job.
-- [`.goreleaser.yml`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/.goreleaser.yml) packages Linux, macOS, and Windows binaries for `amd64` and `arm64`, with `CGO_ENABLED=0`.
+### Thin root, real work in packages
 
-One implication matters: if you are working on a long-lived non-`main` branch, local validation is the real gate until CI is wired for that branch.
+`main.go` should stay thin.
+It wires the command tree together, loads environment/config, and delegates real behavior into internal packages.
 
-## Bootstrap Asset Flow
+### Output envelope is an external contract
 
-Bootstrap content is a product surface, not a side document.
+If you change envelope fields or semantics, you are changing agent-facing API behavior.
+Be explicit and test it.
 
-The runtime flow is:
-1. [`install.sh`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/install.sh) downloads source for the requested Git ref and builds `cojira`.
-2. The installer runs `cojira bootstrap --output /tmp/cojira/COJIRA-BOOTSTRAP.md --force`.
-3. [`internal/meta/cmd_bootstrap.go`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/meta/cmd_bootstrap.go) reads embedded files from [`internal/assets`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/assets) and writes:
-   - `COJIRA-BOOTSTRAP.md`
-   - `.env.example`
-   - `examples/README.md`
-   - the example JSON, CSV, and XHTML templates
+### Bootstrap docs are product surface
 
-That means there are two bootstrap-markdown copies that contributors must keep synchronized:
-- [`COJIRA-BOOTSTRAP.md`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/COJIRA-BOOTSTRAP.md): the repo-root, human-readable source copy.
-- [`internal/assets/COJIRA-BOOTSTRAP.md`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/assets/COJIRA-BOOTSTRAP.md): the embedded runtime copy used by `cojira bootstrap`.
+The bootstrap markdown is not ancillary documentation.
+It is how other coding agents learn how to use `cojira` from a clean workspace.
 
-If you change the bootstrap guide, update both in the same change and verify they are byte-for-byte identical.
+### Resumable mutation state matters
 
-There is also an env-template split to be aware of:
-- [`/.env.example`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/.env.example) is the checked-in repo copy people see while working in source.
-- [`internal/assets/env.example`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/assets/env.example) is what `cojira bootstrap` writes into a target workspace as `.env.example`.
+For multi-item mutation flows, a safe retry story is more important than a clever happy path.
+If a command can partially succeed, it should preserve enough information for an agent to resume safely without replaying completed work.
 
-Keep those aligned in intent even though the filenames differ.
+### Experimental board commands are deliberately separate
+
+Board configuration commands use internal Jira APIs and should stay clearly marked as experimental in help text, docs, and user expectations.
+
+## Bootstrap and Agent-Doc Synchronization
+
+There are three markdown files that must stay aligned:
+
+- [`AGENTS.md`](AGENTS.md): canonical repo source
+- [`COJIRA-BOOTSTRAP.md`](COJIRA-BOOTSTRAP.md): exported copy used in clean workspaces
+- [`internal/assets/COJIRA-BOOTSTRAP.md`](internal/assets/COJIRA-BOOTSTRAP.md): embedded runtime copy used by `cojira bootstrap`
+
+There is also one symlink:
+
+- [`CLAUDE.md`](CLAUDE.md) -> `AGENTS.md`
+
+Rules:
+
+- edit `AGENTS.md` first,
+- copy it to `COJIRA-BOOTSTRAP.md`,
+- copy that file to `internal/assets/COJIRA-BOOTSTRAP.md`,
+- never hand-edit `CLAUDE.md`; recreate the symlink instead,
+- verify the root bootstrap file and embedded bootstrap file are byte-for-byte identical before you commit.
+
+Related assets:
+
+- [`.env.example`](.env.example): checked-in repo template
+- [`internal/assets/env.example`](internal/assets/env.example): template emitted by `cojira bootstrap`
+
+Keep those aligned in intent and defaults.
 
 ## How To Add or Change a Command
 
-### 1. Put the command in the right package
+### 1. Put it in the right package
 
-- Jira commands belong under [`internal/jira`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/jira).
-- Confluence commands belong under [`internal/confluence`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/confluence).
-- Setup, planning, diagnostics, and agent-helper flows belong under [`internal/meta`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/meta).
-- Board-configuration commands that depend on GreenHopper belong under [`internal/board`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/board).
+- Jira behavior belongs in `internal/jira`
+- Confluence behavior belongs in `internal/confluence`
+- setup, planning, diagnostics, and agent-helper flows belong in `internal/meta`
+- GreenHopper-based board behavior belongs in `internal/board`
 
 ### 2. Follow the existing command shape
 
-Typical pattern:
-- `New...Cmd()` returns a `*cobra.Command`.
-- The command reads configuration from env and flags using shared helpers.
-- JSON output goes through [`internal/output`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/output).
-- Structured failures use [`internal/errors`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/errors).
+Usual pattern:
 
-Useful helpers:
+- `New...Cmd()` returns a `*cobra.Command`
+- environment and flags are normalized through shared helpers
+- structured output goes through `internal/output`
+- structured failures go through `internal/errors`
+
+Common helpers:
+
 - `cli.AddOutputFlags(...)`
 - `cli.AddHTTPRetryFlags(...)`
 - `cli.AddIdempotencyFlags(...)`
@@ -132,46 +151,60 @@ Useful helpers:
 
 ### 3. Register it explicitly
 
-- Register Jira and Confluence commands in their package-level `commands.go`.
-- Register top-level meta commands in [`main.go`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/main.go).
-- Board commands are attached to the Jira command tree from [`main.go`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/main.go), not as a separate root tool.
+- Jira and Confluence subcommands are registered in their package-level command constructors
+- top-level meta commands are registered from `main.go`
+- board commands hang off the Jira tree rather than a separate root tool
 
 ### 4. Preserve product conventions
 
-- Prefer flexible identifiers over forcing users to normalize URLs into IDs.
-- Prefer explicit preview or validation surfaces on mutating flows.
-- Confluence page commands must preserve storage-format fidelity.
-- Raw API commands should stay narrow and allowlisted.
-- If a command is experimental or relies on internal Atlassian APIs, say so in help text and docs.
+- prefer flexible identifiers over forcing users to normalize inputs first
+- prefer preview or validation surfaces on mutation commands
+- keep Confluence storage-format fidelity intact
+- keep raw API surfaces narrow and allowlisted
+- mark unstable/internal API features as experimental in both docs and help text
 
-### 5. Test the actual behavior
+### 5. Test the real behavior
 
-The existing repo leans on package-local command tests and mocked HTTP servers. Match that style:
-- Add tests in the same package when changing a command handler.
-- Cover both `--output-mode json` and human/summary output when behavior differs.
-- Prefer narrow regression tests for parsing, validation, and output contracts.
+Prefer narrow regression tests that prove the actual contract:
+
+- parsing edge cases
+- output-mode differences
+- root registration and smoke wiring
+- resumable partial-failure behavior
+- identifier resolution
+- error and warning envelopes
 
 ### 6. Update docs in the same change
 
-A command-surface change is not done until you update:
-- [`README.md`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/README.md) if the top-level feature set changed,
-- [`COJIRA-BOOTSTRAP.md`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/COJIRA-BOOTSTRAP.md) and its embedded copy,
-- and any agent-facing guidance that mentions the old behavior.
+A command change is incomplete until you update:
 
-## Architectural Notes Worth Preserving
+- [`README.md`](README.md) when the top-level capability surface changed
+- [`AGENTS.md`](AGENTS.md)
+- [`COJIRA-BOOTSTRAP.md`](COJIRA-BOOTSTRAP.md)
+- [`internal/assets/COJIRA-BOOTSTRAP.md`](internal/assets/COJIRA-BOOTSTRAP.md)
+- any examples or templates that changed
 
-- The CLI root is intentionally thin. It wires commands together and delegates real behavior into internal packages.
-- The output envelope is part of the external contract. Be careful when changing field names or semantics.
-- `dotenv` does more than load env vars: it also tracks provenance for diagnostics and agent introspection.
-- `describe` is not marketing copy. It is a machine-readable capability manifest and should stay grounded in the real command tree.
-- `install.sh` is a first-class distribution path. If a packaging change breaks the curl install flow, that is a user-facing regression.
+## Coding Conventions
 
-## Documentation Expectations
+- Prefer ASCII unless the file already needs something else.
+- Reach for the standard library before new dependencies.
+- Add comments where behavior is not self-evident, but do not narrate obvious code.
+- Keep error messages actionable and specific.
+- Preserve structured recovery metadata when returning user-facing errors.
+- Avoid silent fallback on destructive or lossy behavior.
+- When a mutation partially succeeds, emit enough state for safe resume.
 
-Documentation quality matters because `cojira` is frequently bootstrapped through another agent.
+## Release and Installer Notes
 
-When you update docs:
-- Prefer concrete examples over generic claims.
-- Distinguish supported, experimental, and unsupported capabilities clearly.
-- Do not document files or generated assets that do not exist.
-- Keep the bootstrap guide self-contained: an agent reading only that file should understand install, configuration, safety rules, command coverage, and recovery behavior.
+- `install.sh` is a first-class distribution surface, not an internal convenience script.
+- The beta-branch curl install path should keep working without additional environment variables.
+- If you change installer defaults, bootstrap output paths, or embedded assets, treat that as a user-facing change and document it.
+
+## Before You Commit
+
+- run `go test ./...`
+- run `go vet ./...`
+- run `go test -race ./...`
+- verify `AGENTS.md`, `COJIRA-BOOTSTRAP.md`, and `internal/assets/COJIRA-BOOTSTRAP.md` are synchronized
+- verify `CLAUDE.md` is a symlink to `AGENTS.md`
+- verify there are no stale organization-specific URLs or remotes left in tracked files

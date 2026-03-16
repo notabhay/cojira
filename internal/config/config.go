@@ -22,6 +22,7 @@ type ConfigError struct {
 	ExitCode    int
 }
 
+// Error returns the underlying configuration error message.
 func (e *ConfigError) Error() string {
 	return e.Message
 }

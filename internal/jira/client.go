@@ -19,10 +19,14 @@ import (
 )
 
 const (
+	// DefaultAPIVersion is the Jira REST API version used when none is configured.
 	DefaultAPIVersion = "2"
-	DefaultUserAgent  = "cojira/0.1"
-	GreenhopperBase   = "/rest/greenhopper/1.0"
-	AgileBase         = "/rest/agile/1.0"
+	// DefaultUserAgent is the default HTTP user-agent string sent by the Jira client.
+	DefaultUserAgent = "cojira/0.1"
+	// GreenhopperBase is the internal Jira Software base path for GreenHopper endpoints.
+	GreenhopperBase = "/rest/greenhopper/1.0"
+	// AgileBase is the public Jira Agile REST base path.
+	AgileBase = "/rest/agile/1.0"
 )
 
 // ClientConfig holds the parameters for creating a new JiraClient.

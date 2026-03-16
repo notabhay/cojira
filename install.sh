@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_VERSION="v0.1.4"
+DEFAULT_VERSION="beta"
 DEFAULT_GITHUB_REPO="notabhay/cojira"
 DEFAULT_BOOTSTRAP_OUT="/tmp/cojira/COJIRA-BOOTSTRAP.md"
 
@@ -88,12 +88,35 @@ main() {
   need_cmd uname
   need_cmd sed
 
-  local version="${COJIRA_VERSION:-$DEFAULT_VERSION}"
-  case "$version" in
-    v*) ;;
-    *) version="v${version}" ;;
-  esac
-  local ref="${COJIRA_REF:-refs/tags/${version}}"
+  local version="${COJIRA_VERSION:-}"
+  local ref="${COJIRA_REF:-}"
+
+  if [ -z "$version" ] && [ -z "$ref" ]; then
+    version="$DEFAULT_VERSION"
+    ref="refs/heads/${DEFAULT_VERSION}"
+  elif [ -z "$ref" ]; then
+    case "$version" in
+      refs/heads/* | refs/tags/*)
+        ref="$version"
+        version="${version##*/}"
+        ;;
+      beta | main | master)
+        ref="refs/heads/${version}"
+        ;;
+      v*)
+        ref="refs/tags/${version}"
+        ;;
+      *)
+        version="v${version}"
+        ref="refs/tags/${version}"
+        ;;
+    esac
+  elif [ -z "$version" ]; then
+    case "$ref" in
+      refs/heads/* | refs/tags/*) version="${ref##*/}" ;;
+      *) version="$DEFAULT_VERSION" ;;
+    esac
+  fi
 
   local github_repo="${COJIRA_GITHUB_REPO:-$DEFAULT_GITHUB_REPO}"
   local install_dir="${COJIRA_INSTALL_DIR:-${GOBIN:-$HOME/.local/bin}}"
@@ -139,7 +162,7 @@ main() {
 
   log ""
   log "Next:"
-  log "  Open ${bootstrap_out} and follow it to set up this workspace."
+  log "  follow ${bootstrap_out}"
 }
 
 main "$@"

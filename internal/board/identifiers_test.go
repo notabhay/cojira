@@ -11,7 +11,7 @@ func TestResolveBoardIdentifierNumeric(t *testing.T) {
 }
 
 func TestResolveBoardIdentifierRapidViewURL(t *testing.T) {
-	url := "https://jira.rakuten-it.com/jira/secure/RapidView.jspa?rapidView=45434&tab=swimlanes"
+	url := "https://jira.example.com/jira/secure/RapidView.jspa?rapidView=45434&tab=swimlanes"
 	assert.Equal(t, "45434", ResolveBoardIdentifier(url))
 }
 

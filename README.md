@@ -1,110 +1,143 @@
 # cojira
 
-`cojira` is an agent-first CLI for Jira and Confluence work. It is built for the workflow where a human gives plain-language intent, an automation agent does the operational work, and the tool itself provides safe mutation surfaces, structured machine-readable output, and enough previewability to keep Atlassian changes boring.
+`cojira` is an agent-first CLI for Jira and Confluence work.
+It is built for the operating mode where a human gives intent in plain language, an automation agent does the work, and the tool itself provides stable commands, previewable mutations, structured output, and resumable retries.
 
-It is useful for:
-- Coding agents that need a stable command surface instead of hand-rolled REST calls.
-- Engineers and operators who want one CLI for Jira issue work and Confluence page work.
-- Teams that care about dry runs, predictable JSON output, and low-dependency binaries.
+## Who It Is For
 
-## Why cojira exists
+- coding agents that should not hand-roll Atlassian REST calls,
+- engineers and operators who want one CLI for both Jira and Confluence,
+- teams that care about `--dry-run`, predictable JSON output, low dependency count, and safe retries.
 
-Most Atlassian tooling is optimized either for humans clicking through UIs or for engineers building raw API integrations. `cojira` sits in the middle:
-- It gives agents a consistent command tree with structured envelopes, typed error codes, and summary output modes.
-- It keeps destructive work previewable with `--dry-run`, `cojira plan ...`, and explicit validation commands.
-- It accepts flexible identifiers, so a user can paste a Jira key, page URL, tiny link, board URL, or page title instead of pre-normalizing inputs.
-- It stays intentionally lean: Cobra plus a small supporting set of dependencies, with most behavior implemented in the standard library.
+## Why It Exists
 
-## What It Can Do
+Most Atlassian tooling is optimized either for browser clicks or for bespoke integrations.
+`cojira` sits in the middle:
 
-### Meta workflow
-
-| Area | What you get |
-| --- | --- |
-| Capability discovery | `describe`, including live context checks with `--with-context` |
-| Setup and diagnostics | `init`, `doctor`, and bootstrap asset generation |
-| Safe previews | `plan <tool> <command> ...` to force preview-first execution |
-| Natural-language dispatch | `do <intent>` for phrasebook-driven intent parsing |
-
-### Jira workflow
-
-| Area | Commands |
-| --- | --- |
-| Read and inspect | `info`, `get`, `search`, `fields`, `whoami`, `board-issues` |
-| Write and mutate | `create`, `update`, `transition`, `delete` |
-| Bulk operations | `batch`, `bulk-update`, `bulk-transition`, `bulk-update-summaries` |
-| Disk sync | `sync`, `sync-from-dir` |
-| Narrow raw access | `raw` on allowlisted Jira REST paths |
-| Board configuration | Experimental `board-detail-view` and `board-swimlanes` commands |
-
-### Confluence workflow
-
-| Area | Commands |
-| --- | --- |
-| Read and inspect | `info`, `get`, `view`, `find`, `tree`, `comments` |
-| Write and mutate | `create`, `update`, `rename`, `move`, `archive`, `copy-tree` |
-| Validation and automation | `validate`, `batch`, read-only `raw` |
-
-## Safety Model
-
-`cojira` is opinionated about safe automation:
-- Mutating flows commonly expose `--dry-run`, and `cojira plan ...` can force preview mode from the outside.
-- Confluence editing is designed around storage-format XHTML. The tool assumes you preserve `<ac:...>` and `<ri:...>` macros instead of converting pages through Markdown.
-- Output modes are explicit: `human`, `summary`, `json`, and `auto`.
-- JSON responses use a consistent envelope with `ok`, `result`, `warnings`, `errors`, and `exit_code`.
-- Idempotency helpers exist for mutation commands so agents can avoid accidental replays when retrying.
+- it gives agents a stable command tree instead of ad hoc HTTP payload construction,
+- it keeps destructive work previewable with `--dry-run`, `cojira plan ...`, and validation commands,
+- it accepts flexible identifiers, so users can paste issue keys, page URLs, board URLs, page ids, or `SPACE:"Title"` forms,
+- it exposes structured envelopes and stable error codes so another tool can reason about failures,
+- it now emits resumable partial-failure state for the highest-risk multi-item mutation flows.
 
 ## Install
 
-### Fastest install from the current `beta` branch
+### Canonical agent bootstrap prompt
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/beta/install.sh | COJIRA_REF=refs/heads/beta bash
+curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/beta/install.sh | bash && git clone --branch beta https://github.com/notabhay/cojira.git /tmp/cojira 2>/dev/null || git -C /tmp/cojira pull && follow /tmp/cojira/COJIRA-BOOTSTRAP.md
 ```
 
-That installer:
-- Downloads a source archive for the requested ref.
-- Ensures a usable Go toolchain exists locally.
-- Builds `cojira` into `${GOBIN:-$HOME/.local/bin}/cojira`.
-- Writes the bootstrap guide to `/tmp/cojira/COJIRA-BOOTSTRAP.md`.
+That flow:
+
+- installs the current `beta` branch,
+- writes `/tmp/cojira/COJIRA-BOOTSTRAP.md`,
+- clones or refreshes `/tmp/cojira`,
+- then uses the bootstrap guide as the only required source of truth.
 
 ### Source build
 
 Requires Go 1.22 or newer:
 
 ```bash
-go build -o cojira .
-```
-
-If you prefer Make targets:
-
-```bash
-make build
-make test
-make test-race
-make vet
+go build -o "${GOBIN:-$HOME/.local/bin}/cojira" .
 ```
 
 ## Quickstart
 
-### For humans working in this repo
+### Human setup
 
 1. Install `cojira`.
-2. Configure credentials with `cojira init` or by creating a `.env`.
+2. Run `cojira init` or write `.env` / global credentials manually.
 3. Run `cojira doctor`.
-4. Use `cojira describe --with-context --output-mode json` to inspect the live environment and command surface.
+4. Run `cojira describe --with-context --output-mode json` to inspect the live capability surface.
 
-### For coding agents
+### Agent setup
 
-If you want a single copy-paste bootstrap prompt for another agent session, use:
+Use the canonical one-line prompt above, then treat [`COJIRA-BOOTSTRAP.md`](COJIRA-BOOTSTRAP.md) as the complete operating guide.
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/beta/install.sh | COJIRA_REF=refs/heads/beta bash && git clone --branch beta https://github.com/notabhay/cojira.git /tmp/cojira 2>/dev/null || git -C /tmp/cojira pull && follow /tmp/cojira/COJIRA-BOOTSTRAP.md
-```
+## Safety and Recovery Model
 
-The authoritative setup and agent-usage document is [`COJIRA-BOOTSTRAP.md`](COJIRA-BOOTSTRAP.md).
+`cojira` is opinionated about safe automation:
 
-## Common Examples
+- mutating flows expose `--dry-run` or can be wrapped with `cojira plan ...`,
+- Confluence page editing is storage-format XHTML first; the tool assumes you preserve macros rather than converting through Markdown,
+- multi-item mutation flows now emit machine-readable `resumable_state` on partial failure,
+- rerunning the same command with the emitted `--idempotency-key` resumes from the frozen operation snapshot instead of replaying succeeded items,
+- output modes are explicit and JSON output is designed for chaining.
+
+The resumable partial-failure contract currently covers:
+
+- `cojira jira batch`
+- `cojira jira bulk-update`
+- `cojira jira bulk-transition`
+- `cojira jira bulk-update-summaries`
+- `cojira confluence batch`
+- `cojira confluence copy-tree`
+
+## Command Reference
+
+### Top-level commands
+
+| Command | Purpose |
+| --- | --- |
+| `bootstrap` | Write `COJIRA-BOOTSTRAP.md`, `.env.example`, and example templates into a directory |
+| `completion` | Generate shell completion |
+| `confluence` | Confluence page management |
+| `describe` | Machine-readable capability report for agents |
+| `do` | Parse natural-language intent into a concrete command |
+| `doctor` | Diagnose setup and connectivity |
+| `init` | Interactive setup wizard |
+| `jira` | Jira issue and board automation |
+| `plan` | Preview a command without applying it |
+
+### Jira commands
+
+| Command | Purpose |
+| --- | --- |
+| `batch` | Run batch Jira operations |
+| `board-detail-view` | Experimental Issue Detail View management |
+| `board-issues` | List issues on a board |
+| `board-swimlanes` | Experimental swimlane management |
+| `bulk-transition` | Transition many issues matched by JQL |
+| `bulk-update` | Apply one payload to many issues |
+| `bulk-update-summaries` | Rename many issues from CSV or JSON |
+| `create` | Create an issue from JSON |
+| `delete` | Delete an issue |
+| `fields` | Search Jira fields |
+| `get` | Fetch full issue JSON |
+| `info` | Show issue metadata |
+| `raw` | Send an allowlisted Jira REST request |
+| `search` | Search issues using JQL |
+| `sync` | Sync issues to local folders |
+| `sync-from-dir` | Apply updates from local ticket folders |
+| `transition` | Transition one issue |
+| `transitions` | List available transitions |
+| `update` | Update issue fields |
+| `validate` | Validate Jira JSON payloads |
+| `whoami` | Show the current Jira identity |
+
+### Confluence commands
+
+| Command | Purpose |
+| --- | --- |
+| `archive` | Archive a page under another parent |
+| `batch` | Run batch Confluence operations |
+| `comments` | List page comments |
+| `copy-tree` | Copy a page tree under a new parent |
+| `create` | Create a page from XHTML |
+| `find` | Search by title or CQL |
+| `get` | Download storage-format XHTML |
+| `info` | Show page metadata |
+| `move` | Move a page to a new parent |
+| `raw` | Send a read-only Confluence REST request |
+| `rename` | Rename a page |
+| `tree` | Show page hierarchy |
+| `update` | Update a page from XHTML |
+| `validate` | Validate storage-format XHTML |
+| `view` | Fetch rendered HTML for reading |
+
+## Representative Examples
 
 ```bash
 # Diagnose setup
@@ -113,48 +146,57 @@ cojira doctor
 # Describe the live command surface for an agent
 cojira describe --with-context --output-mode json
 
-# Show a Jira issue
+# Read a Jira issue
 cojira jira info PROJ-123 --output-mode summary
 
 # Preview a Jira update
 cojira jira update PROJ-123 --set labels+=urgent --dry-run
 
-# Fetch a Confluence page body
+# Fetch and validate a Confluence page body
 cojira confluence get 12345 -o page.html
+cojira confluence validate page.html
 
-# Preview a Confluence tree copy
+# Preview a Confluence copy-tree
 cojira confluence copy-tree 12345 67890 --dry-run
 ```
 
 ## Experimental Board Commands
 
-The Jira board-detail-view and board-swimlanes commands are marked experimental because they use internal GreenHopper endpoints rather than the public Jira REST surface. Treat them as powerful but brittle:
-- Expect them to require board-admin permissions.
-- Expect breakage across Jira upgrades.
-- Prefer export, review, and `--dry-run` before apply-style mutations.
+`board-detail-view` and `board-swimlanes` use internal Jira GreenHopper endpoints rather than the public REST surface.
+Treat them as powerful but brittle:
+
+- expect them to require elevated board permissions,
+- expect them to break across Jira upgrades,
+- prefer export, review, validation, and `--dry-run` before apply-style changes.
 
 ## Documentation Map
 
-Start here, in this order:
-- [`COJIRA-BOOTSTRAP.md`](COJIRA-BOOTSTRAP.md): canonical setup, credentials, safety rules, full command surface, phrasebook, and recovery guidance for agents.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md): repo layout, architecture, build/test workflow, and how to add or change commands safely.
-- [`AGENTS.md`](AGENTS.md): repo-scoped agent instructions currently checked into the repo.
-- [`CLAUDE.md`](CLAUDE.md): companion agent instructions for Claude-oriented workflows.
+- [`AGENTS.md`](AGENTS.md): canonical agent guide in the repo.
+- [`CLAUDE.md`](CLAUDE.md): symlink to `AGENTS.md` for tools that look for that filename.
+- [`COJIRA-BOOTSTRAP.md`](COJIRA-BOOTSTRAP.md): export-ready copy of the same agent guide for clean workspaces.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md): architecture, repo layout, build/test workflow, command-registration patterns, and doc-sync rules.
 
 ## Repository Layout
 
-At a high level:
-- [`main.go`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/main.go) wires the root command and top-level subcommand registration.
-- [`internal/jira`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/jira) contains Jira client code and command handlers.
-- [`internal/confluence`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/confluence) contains Confluence client code and command handlers.
-- [`internal/meta`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/meta) contains setup, diagnostics, bootstrap, plan, describe, and `do`.
-- [`internal/assets`](/Users/abhay.a.sriwastawa/Documents/projects/cojira/internal/assets) contains the embedded bootstrap docs and example templates used by `cojira bootstrap`.
+- [`main.go`](main.go): root command assembly and top-level registration.
+- [`install.sh`](install.sh): curl-friendly installer that builds `cojira` and emits bootstrap assets.
+- [`internal/cli`](internal/cli): shared Cobra helpers, output normalization, idempotency flags, and root behavior.
+- [`internal/meta`](internal/meta): `describe`, `doctor`, `init`, `bootstrap`, `plan`, and `do`.
+- [`internal/jira`](internal/jira): Jira client, parsing, identifier handling, and Jira command handlers.
+- [`internal/confluence`](internal/confluence): Confluence client, identifier handling, XHTML-centric workflows, and Confluence command handlers.
+- [`internal/board`](internal/board): experimental Jira board configuration flows.
+- [`internal/assets`](internal/assets): embedded bootstrap markdown, env template, and example payload files.
 
-## Contributing
+## Development
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the real development guide. It covers:
-- package boundaries and responsibilities,
-- how bootstrap docs and embedded assets flow through the binary,
-- the local validation loop,
-- current CI and release wiring,
-- and the conventions to follow when adding a new command or mutation workflow.
+The normal local loop is:
+
+```bash
+go test ./...
+go vet ./...
+go test -race ./...
+```
+
+`make build`, `make test`, `make test-race`, and `make vet` are thin wrappers around the same checks.
+
+For architecture, extension guidance, and documentation maintenance rules, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
