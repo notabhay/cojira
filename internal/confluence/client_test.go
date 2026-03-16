@@ -99,6 +99,21 @@ func TestHTTP403Error(t *testing.T) {
 	assert.Equal(t, cerrors.HTTP403, ce.Code)
 }
 
+func TestHTTP404Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"message":"Missing"}`))
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	_, err := c.Request("GET", "/content/12345", nil, nil)
+	require.Error(t, err)
+	var ce *cerrors.CojiraError
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, cerrors.HTTP404, ce.Code)
+}
+
 func TestGetPageByID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/rest/api/content/12345", r.URL.Path)
@@ -207,6 +222,32 @@ func TestSetPageLabel(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCreatePageDoesNotRetryRetryableStatuses(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(503)
+		_, _ = w.Write([]byte(`{"message":"retry later"}`))
+	}))
+	defer server.Close()
+
+	c, err := NewClient(ClientConfig{
+		BaseURL: server.URL,
+		Token:   "fake-token",
+		Timeout: 5 * time.Second,
+		RetryConfig: httpclient.RetryConfig{
+			Retries:       3,
+			RetryStatuses: map[int]bool{503: true},
+			Sleep:         func(time.Duration) {},
+		},
+	})
+	require.NoError(t, err)
+
+	_, err = c.CreatePage(map[string]any{"title": "Page", "type": "page"})
+	require.Error(t, err)
+	assert.Equal(t, 1, callCount)
+}
+
 func TestGetChildren(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -279,6 +320,40 @@ func TestListSpaces(t *testing.T) {
 	result, err := c.ListSpaces(25, 0)
 	require.NoError(t, err)
 	assert.NotNil(t, result["results"])
+}
+
+func TestGetPageComments(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		assert.Equal(t, "/rest/api/content/12345/child/comment", r.URL.Path)
+		assert.Equal(t, "body.view,history", r.URL.Query().Get("expand"))
+		assert.Equal(t, "2", r.URL.Query().Get("limit"))
+		if callCount == 1 {
+			assert.Equal(t, "0", r.URL.Query().Get("start"))
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"id": "1", "body": map[string]any{"view": map[string]any{"value": "<p>First</p>"}}},
+					{"id": "2", "body": map[string]any{"view": map[string]any{"value": "<p>Second</p>"}}},
+				},
+			})
+			return
+		}
+		assert.Equal(t, "2", r.URL.Query().Get("start"))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "3", "body": map[string]any{"view": map[string]any{"value": "<p>Third</p>"}}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	comments, err := c.GetPageComments("12345", 2, "body.view,history")
+	require.NoError(t, err)
+	require.Len(t, comments, 3)
+	assert.Equal(t, "1", comments[0]["id"])
+	assert.Equal(t, "3", comments[2]["id"])
 }
 
 func TestBaseURLTrailingSlashStripped(t *testing.T) {

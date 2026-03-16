@@ -117,7 +117,30 @@ func runFind(cmd *cobra.Command, args []string) error {
 	}
 
 	if mode == "summary" {
-		fmt.Printf("Found %d page(s) for query: %s\n", len(pages), query)
+		if len(pages) == 0 {
+			fmt.Printf("Found 0 page(s) for query: %s\n", query)
+			return nil
+		}
+		preview := make([]string, 0, 3)
+		for _, p := range pages {
+			pm, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			content, _ := pm["content"].(map[string]any)
+			if content == nil {
+				continue
+			}
+			preview = append(preview, fmt.Sprintf("[%s] %v", getNestedString(content, "space", "key"), content["title"]))
+			if len(preview) == 3 {
+				break
+			}
+		}
+		if len(preview) > 0 {
+			fmt.Printf("Found %d page(s) for query: %s. First results: %s\n", len(pages), query, strings.Join(preview, "; "))
+		} else {
+			fmt.Printf("Found %d page(s) for query: %s\n", len(pages), query)
+		}
 		return nil
 	}
 

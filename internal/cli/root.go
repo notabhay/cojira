@@ -57,7 +57,11 @@ func Execute(rootCmd *cobra.Command) error {
 	args := os.Args[1:]
 	if len(args) > 0 {
 		tool := strings.ToLower(strings.TrimSpace(args[0]))
-		if expanded := tryExpandAlias(tool, args[1:], 0); expanded != nil {
+		expanded, err := tryExpandAlias(tool, args[1:], 0)
+		if err != nil {
+			return err
+		}
+		if expanded != nil {
 			rootCmd.SetArgs(expanded)
 			return rootCmd.Execute()
 		}
@@ -66,10 +70,14 @@ func Execute(rootCmd *cobra.Command) error {
 }
 
 // tryExpandAlias checks if `tool` is a configured alias in .cojira.json.
-func tryExpandAlias(tool string, rest []string, depth int) []string {
+func tryExpandAlias(tool string, rest []string, depth int) ([]string, error) {
 	if depth >= maxAliasDepth {
-		fmt.Fprintln(os.Stderr, "Error: Alias expansion depth exceeded (possible loop)")
-		return nil
+		return nil, &config.ConfigError{
+			Code:        config.CodeConfigInvalid,
+			Message:     "Alias expansion depth exceeded (possible loop).",
+			UserMessage: "Your .cojira.json aliases look recursive. Fix the alias chain and try again.",
+			ExitCode:    2,
+		}
 	}
 
 	builtins := map[string]bool{
@@ -79,33 +87,45 @@ func tryExpandAlias(tool string, rest []string, depth int) []string {
 		"completion": true,
 	}
 	if builtins[tool] {
-		return nil
+		return nil, nil
 	}
 
 	dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
 	projCfg, err := config.LoadProjectConfig(config.DefaultConfigPaths())
-	if err != nil || projCfg == nil {
-		return nil
+	if err != nil {
+		return nil, err
+	}
+	if projCfg == nil {
+		return nil, nil
 	}
 
 	template := projCfg.GetAlias(tool)
 	if template == "" {
-		return nil
+		return nil, nil
 	}
 
 	expanded, err := shlex.Split(template)
 	if err != nil {
-		return nil
+		return nil, &config.ConfigError{
+			Code:        config.CodeConfigInvalid,
+			Message:     fmt.Sprintf("Alias %q has invalid shell syntax: %v", tool, err),
+			UserMessage: fmt.Sprintf("Your %s alias %q is malformed.", config.ConfigFilename, tool),
+			ExitCode:    2,
+		}
 	}
 
 	expandedArgs := append(expanded, rest...)
 
 	if len(expandedArgs) > 0 {
 		nextTool := strings.ToLower(strings.TrimSpace(expandedArgs[0]))
-		if recursive := tryExpandAlias(nextTool, expandedArgs[1:], depth+1); recursive != nil {
-			return recursive
+		recursive, recurErr := tryExpandAlias(nextTool, expandedArgs[1:], depth+1)
+		if recurErr != nil {
+			return nil, recurErr
+		}
+		if recursive != nil {
+			return recursive, nil
 		}
 	}
 
-	return expandedArgs
+	return expandedArgs, nil
 }

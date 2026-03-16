@@ -3,6 +3,7 @@ package confluence
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/notabhay/cojira/internal/cli"
 	cerrors "github.com/notabhay/cojira/internal/errors"
@@ -67,10 +68,23 @@ func runTree(cmd *cobra.Command, args []string) error {
 	title, _ := page["title"].(string)
 
 	if mode == "json" {
-		nodes := []map[string]any{
-			{"id": pageID, "title": title, "parent_id": nil, "depth": 0},
+		treeNodes, treeErr := collectPageTree(client, pageID, title, maxDepth)
+		if treeErr != nil {
+			errObj, _ := output.ErrorObj(cerrors.FetchFailed, treeErr.Error(), "", "", nil)
+			return output.PrintJSON(output.BuildEnvelope(
+				false, "confluence", "tree",
+				map[string]any{"page": pageArg, "page_id": pageID},
+				nil, nil, []any{errObj}, "", "", "", nil,
+			))
 		}
-		collectTreeJSON(client, pageID, pageID, 1, maxDepth, &nodes)
+		nodes := make([]map[string]any, 0, len(treeNodes))
+		for _, node := range treeNodes {
+			var parentID any
+			if node.ParentID != "" {
+				parentID = node.ParentID
+			}
+			nodes = append(nodes, map[string]any{"id": node.ID, "title": node.Title, "parent_id": parentID, "depth": node.Depth})
+		}
 		return output.PrintJSON(output.BuildEnvelope(
 			true, "confluence", "tree",
 			map[string]any{"page": pageArg, "page_id": pageID},
@@ -84,46 +98,45 @@ func runTree(cmd *cobra.Command, args []string) error {
 	}
 
 	if mode == "summary" {
-		children, _ := client.GetChildren(pageID, 100)
-		fmt.Printf("Tree for %s (%s): %d direct child(ren), depth %d.\n", title, pageID, len(children), maxDepth)
+		treeNodes, treeErr := collectPageTree(client, pageID, title, maxDepth)
+		if treeErr != nil {
+			return treeErr
+		}
+		var directChildren []string
+		for _, node := range treeNodes {
+			if node.Depth == 1 {
+				directChildren = append(directChildren, node.Title)
+			}
+		}
+		preview := strings.Join(directChildren, ", ")
+		if len(directChildren) > 3 {
+			preview = strings.Join(directChildren[:3], ", ") + fmt.Sprintf(" (+%d more)", len(directChildren)-3)
+		}
+		if preview != "" {
+			fmt.Printf("Tree for %s (%s): %d page(s) visible to depth %d. Direct children: %s.\n", title, pageID, len(treeNodes), maxDepth, preview)
+		} else {
+			fmt.Printf("Tree for %s (%s): %d page(s) visible to depth %d.\n", title, pageID, len(treeNodes), maxDepth)
+		}
 		return nil
 	}
 
 	fmt.Printf("%s (%s)\n", title, pageID)
-	children, _ := client.GetChildren(pageID, 100)
+	children, err := client.GetChildren(pageID, 100)
+	if err != nil {
+		return err
+	}
 	for i, child := range children {
 		isLast := i == len(children)-1
 		childID, _ := child["id"].(string)
 		childTitle, _ := child["title"].(string)
-		printTreeNode(client, childID, childTitle, 1, "", isLast, maxDepth)
+		if err := printTreeNode(client, childID, childTitle, 1, "", isLast, maxDepth); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func collectTreeJSON(client *Client, rootID, parentID string, depth, maxDepth int, nodes *[]map[string]any) {
-	if depth > maxDepth {
-		return
-	}
-	children, err := client.GetChildren(parentID, 100)
-	if err != nil {
-		return
-	}
-	for _, child := range children {
-		childID, _ := child["id"].(string)
-		childTitle, _ := child["title"].(string)
-		*nodes = append(*nodes, map[string]any{
-			"id":        childID,
-			"title":     childTitle,
-			"parent_id": parentID,
-			"depth":     depth,
-		})
-		if depth < maxDepth {
-			collectTreeJSON(client, rootID, childID, depth+1, maxDepth, nodes)
-		}
-	}
-}
-
-func printTreeNode(client *Client, pageID, title string, depth int, prefix string, isLast bool, maxDepth int) {
+func printTreeNode(client *Client, pageID, title string, depth int, prefix string, isLast bool, maxDepth int) error {
 	connector := "├── "
 	if isLast {
 		connector = "└── "
@@ -131,12 +144,15 @@ func printTreeNode(client *Client, pageID, title string, depth int, prefix strin
 	fmt.Printf("%s%s%s (%s)\n", prefix, connector, title, pageID)
 
 	if depth >= maxDepth {
-		return
+		return nil
 	}
 
 	children, err := client.GetChildren(pageID, 100)
-	if err != nil || len(children) == 0 {
-		return
+	if err != nil {
+		return err
+	}
+	if len(children) == 0 {
+		return nil
 	}
 
 	newPrefix := prefix + "│   "
@@ -147,6 +163,9 @@ func printTreeNode(client *Client, pageID, title string, depth int, prefix strin
 		isChildLast := i == len(children)-1
 		childID, _ := child["id"].(string)
 		childTitle, _ := child["title"].(string)
-		printTreeNode(client, childID, childTitle, depth+1, newPrefix, isChildLast, maxDepth)
+		if err := printTreeNode(client, childID, childTitle, depth+1, newPrefix, isChildLast, maxDepth); err != nil {
+			return err
+		}
 	}
+	return nil
 }

@@ -30,7 +30,15 @@ If `cojira` is already on your PATH, skip to "Verify" below.
 
 ### Install with curl (recommended; no git/Go)
 
-This downloads a source archive for the tagged version (no git clone) and builds/installs to `~/.local/bin/cojira` (or `$GOBIN/cojira`). If Go isn't installed, it downloads a user-local Go toolchain first.
+This downloads a source archive and builds/installs to `~/.local/bin/cojira` (or `$GOBIN/cojira`). If Go isn't installed, it downloads a user-local Go toolchain first.
+
+For the current pushed `beta` branch:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/beta/install.sh | COJIRA_REF=refs/heads/beta NODE_TLS_REJECT_UNAUTHORIZED=0 bash
+```
+
+If you specifically want the latest tagged release instead:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/v0.1.4/install.sh | NODE_TLS_REJECT_UNAUTHORIZED=0 bash
@@ -116,9 +124,10 @@ If doctor reports errors:
 - **404**: Base URL is wrong — likely missing a context path (e.g. `/jira`). Re-run `cojira init`.
 - **401 with JIRA_EMAIL set**: If using a Personal Access Token, remove `JIRA_EMAIL` or set `JIRA_AUTH_MODE=bearer`.
 
-`cojira` loads the first `.env` it finds in:
-1) `./.env` (current working directory)
-2) `~/.config/cojira/credentials` (global credentials file)
+`cojira` merges environment from these sources in order:
+1) inherited shell environment values always win
+2) `./.env` (current working directory) fills any missing keys
+3) `~/.config/cojira/credentials` (global credentials file) fills any remaining missing keys
 
 Optional project defaults (recommended): create `.cojira.json` to set defaults like project key, space key, or root page ID.
 See `examples/cojira-project.json`.

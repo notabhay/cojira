@@ -27,22 +27,33 @@ func ParseSetExpr(expr string) (string, string, string, error) {
 		}
 	}
 
-	for _, op := range []string{OpJSONSet, OpListAppend, OpListRemove, OpSet} {
-		idx := strings.Index(raw, op)
-		if idx >= 0 {
-			field := strings.TrimSpace(raw[:idx])
-			value := strings.TrimSpace(raw[idx+len(op):])
-			field = strings.TrimPrefix(field, "fields.")
-			field = strings.TrimSpace(field)
-			if field == "" {
-				return "", "", "", &cerrors.CojiraError{
-					Code:     cerrors.OpFailed,
-					Message:  fmt.Sprintf("Invalid --set expression (missing field): %q", expr),
-					ExitCode: 1,
-				}
-			}
-			return field, op, value, nil
+	for i := 0; i < len(raw); i++ {
+		op := ""
+		switch {
+		case i+1 < len(raw) && raw[i] == ':' && raw[i+1] == '=':
+			op = OpJSONSet
+		case i+1 < len(raw) && raw[i] == '+' && raw[i+1] == '=':
+			op = OpListAppend
+		case i+1 < len(raw) && raw[i] == '-' && raw[i+1] == '=':
+			op = OpListRemove
+		case raw[i] == '=':
+			op = OpSet
 		}
+		if op == "" {
+			continue
+		}
+		field := strings.TrimSpace(raw[:i])
+		value := strings.TrimSpace(raw[i+len(op):])
+		field = strings.TrimPrefix(field, "fields.")
+		field = strings.TrimSpace(field)
+		if field == "" {
+			return "", "", "", &cerrors.CojiraError{
+				Code:     cerrors.OpFailed,
+				Message:  fmt.Sprintf("Invalid --set expression (missing field): %q", expr),
+				ExitCode: 1,
+			}
+		}
+		return field, op, value, nil
 	}
 
 	return "", "", "", &cerrors.CojiraError{

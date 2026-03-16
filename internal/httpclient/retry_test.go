@@ -2,7 +2,9 @@ package httpclient
 
 import (
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,4 +264,40 @@ func TestOnRetryCallbackForExceptions(t *testing.T) {
 	require.Len(t, calls, 1)
 	assert.Equal(t, 1, calls[0].attempt)
 	assert.Equal(t, 0, calls[0].status) // 0 indicates exception, not HTTP status
+}
+
+type trackingReadCloser struct {
+	closed bool
+}
+
+func (t *trackingReadCloser) Read(p []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (t *trackingReadCloser) Close() error {
+	t.closed = true
+	return nil
+}
+
+func TestRetryableResponseBodyClosedBeforeRetry(t *testing.T) {
+	body := &trackingReadCloser{}
+	responses := []*http.Response{
+		{StatusCode: 503, Header: http.Header{}, Body: body},
+		{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(""))},
+	}
+	idx := 0
+
+	resp, err := RequestWithRetry(func() (*http.Response, error) {
+		r := responses[idx]
+		idx++
+		return r, nil
+	}, RetryConfig{
+		Retries:       1,
+		RetryStatuses: map[int]bool{503: true},
+		Sleep:         noSleep,
+	}, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, 200, resp.StatusCode)
+	assert.True(t, body.closed)
 }

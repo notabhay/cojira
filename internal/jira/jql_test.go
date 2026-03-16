@@ -35,6 +35,11 @@ func TestJQLHasProjectIn(t *testing.T) {
 	assert.True(t, JQLHasProject("project in (FOO, BAR)"))
 }
 
+func TestJQLHasProjectNotEqualsAndNotIn(t *testing.T) {
+	assert.True(t, JQLHasProject("project != FOO"))
+	assert.True(t, JQLHasProject("project not in (FOO, BAR)"))
+}
+
 func TestApplyDefaultJQLScopeAddsWhenMissing(t *testing.T) {
 	jql := ApplyDefaultJQLScope(`status = "Open"`, "project = ABC")
 	assert.Equal(t, `(project = ABC) AND (status = "Open")`, jql)
@@ -43,6 +48,11 @@ func TestApplyDefaultJQLScopeAddsWhenMissing(t *testing.T) {
 func TestApplyDefaultJQLScopeSkipsWhenPresent(t *testing.T) {
 	jql := ApplyDefaultJQLScope(`project = XYZ AND status = "Open"`, "project = ABC")
 	assert.Equal(t, `project = XYZ AND status = "Open"`, jql)
+}
+
+func TestApplyDefaultJQLScopeSkipsWhenPresentWithNotEquals(t *testing.T) {
+	jql := ApplyDefaultJQLScope(`project != XYZ AND status = "Open"`, "project = ABC")
+	assert.Equal(t, `project != XYZ AND status = "Open"`, jql)
 }
 
 func TestApplyDefaultJQLScopeNoScope(t *testing.T) {
@@ -68,6 +78,10 @@ func TestJQLValueNegative(t *testing.T) {
 
 func TestJQLValueNeedsQuoting(t *testing.T) {
 	assert.Equal(t, `"High"`, JQLValue("High"))
+}
+
+func TestJQLValueEscapesEmbeddedQuotes(t *testing.T) {
+	assert.Equal(t, `"a\"b"`, JQLValue(`a"b`))
 }
 
 func TestStripJQLStrings(t *testing.T) {

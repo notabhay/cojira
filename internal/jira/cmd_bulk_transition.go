@@ -172,21 +172,38 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 							opErr = e
 						} else {
 							issue2, e2 := client.GetIssue(key, "status", "")
-							newStatus := toName
-							if e2 == nil {
+							if e2 != nil {
+								opErr = &cerrors.CojiraError{
+									Code:     cerrors.TransitionFailed,
+									Message:  fmt.Sprintf("Transition submitted for %s but the new status could not be verified: %v", key, e2),
+									ExitCode: 1,
+								}
+							} else {
 								fd2, _ := issue2["fields"].(map[string]any)
-								if ns := safeString(fd2, "status", "name"); ns != "" {
-									newStatus = ns
+								newStatus := safeString(fd2, "status", "name")
+								if newStatus == "" {
+									opErr = &cerrors.CojiraError{
+										Code:     cerrors.TransitionFailed,
+										Message:  fmt.Sprintf("Transition submitted for %s but the issue returned no status during verification.", key),
+										ExitCode: 1,
+									}
+								} else if !strings.EqualFold(newStatus, toName) && !strings.EqualFold(newStatus, toFlag) {
+									opErr = &cerrors.CojiraError{
+										Code:     cerrors.TransitionFailed,
+										Message:  fmt.Sprintf("Transitioned %s using %s, but Jira still reports status %q instead of %q.", key, transitionID, newStatus, toName),
+										ExitCode: 1,
+									}
+								} else {
+									r := output.Receipt{OK: true, Message: fmt.Sprintf("Transitioned %s: %s -> %s (transition %s)", key, fromStatus, newStatus, transitionID)}
+									item["receipt"] = r.Format()
+									item["ok"] = true
+									item["to_status"] = newStatus
+									if mode != "json" && !quiet && mode != "summary" {
+										fmt.Println(r.Format())
+									}
+									success++
 								}
 							}
-							r := output.Receipt{OK: true, Message: fmt.Sprintf("Transitioned %s: %s -> %s (transition %s)", key, fromStatus, newStatus, transitionID)}
-							item["receipt"] = r.Format()
-							item["ok"] = true
-							item["to_status"] = newStatus
-							if mode != "json" && !quiet && mode != "summary" {
-								fmt.Println(r.Format())
-							}
-							success++
 						}
 					}
 				}

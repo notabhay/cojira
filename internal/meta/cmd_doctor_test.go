@@ -2,11 +2,15 @@ package meta
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/notabhay/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/dotenv"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -136,11 +140,10 @@ func TestFixWithoutInteractiveJSONExits3(t *testing.T) {
 	assert.Equal(t, 3, exitErr.Code)
 
 	// Read captured output.
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	if n > 0 {
+	buf, _ := io.ReadAll(r)
+	if len(buf) > 0 {
 		var payload map[string]any
-		jsonErr := json.Unmarshal(buf[:n], &payload)
+		jsonErr := json.Unmarshal(buf, &payload)
 		if jsonErr == nil {
 			assert.Equal(t, float64(3), payload["exit_code"])
 			assert.Equal(t, false, payload["ok"])
@@ -165,7 +168,8 @@ func TestAppendEnvValues(t *testing.T) {
 	path := filepath.Join(tmpDir, ".env")
 
 	values := map[string]string{"FOO": "bar", "BAZ": "qux"}
-	written := appendEnvValues(path, values, map[string]string{})
+	written, err := appendEnvValues(path, values, map[string]string{})
+	require.NoError(t, err)
 	assert.Len(t, written, 2)
 
 	data, err := os.ReadFile(path)
@@ -182,8 +186,69 @@ func TestAppendEnvValuesSkipsExisting(t *testing.T) {
 
 	values := map[string]string{"FOO": "bar", "BAZ": "qux"}
 	existing := map[string]string{"FOO": "existing"}
-	written := appendEnvValues(path, values, existing)
+	written, err := appendEnvValues(path, values, existing)
+	require.NoError(t, err)
 	assert.Equal(t, []string{"BAZ"}, written)
+}
+
+func TestDoctorJSONIncludesEnvLoadingAndSources(t *testing.T) {
+	dotenv.ResetTracking()
+	tmpDir := t.TempDir()
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(tmpDir))
+	defer func() { _ = os.Chdir(origDir) }()
+
+	confServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/rest/api/user/current":
+			_ = json.NewEncoder(w).Encode(map[string]any{"displayName": "Conf User", "accountId": "abc"})
+		case "/rest/api/space":
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{{"key": "TEAM"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer confServer.Close()
+
+	envPath := filepath.Join(tmpDir, ".env")
+	require.NoError(t, os.WriteFile(envPath, []byte(
+		"CONFLUENCE_BASE_URL="+confServer.URL+"\nCONFLUENCE_API_TOKEN=conf-token\n",
+	), 0o644))
+	unsetEnvForLoadTest(t, "CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN")
+
+	t.Setenv("JIRA_BASE_URL", "")
+	t.Setenv("JIRA_API_TOKEN", "")
+
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+
+	cmd := NewDoctorCmd()
+	cmd.SetArgs([]string{"--output-mode", "json", "--retries", "0", "--timeout", "1"})
+	err = cmd.Execute()
+
+	_ = w.Close()
+	os.Stdout = origStdout
+
+	assert.Error(t, err)
+	exitErr, ok := err.(*exitError)
+	require.True(t, ok)
+	assert.Equal(t, 1, exitErr.Code)
+
+	buf, _ := io.ReadAll(r)
+	require.NotEmpty(t, buf)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(buf, &payload))
+	result := payload["result"].(map[string]any)
+	envLoading := result["env_loading"].(map[string]any)
+	envSources := result["env_sources"].(map[string]any)
+	assert.Equal(t, canonicalPathForTest(envPath), canonicalPathForTest(envLoading["loaded_path"].(string)))
+
+	confBase := envSources["CONFLUENCE_BASE_URL"].(map[string]any)
+	assert.Equal(t, canonicalPathForTest(envPath), canonicalPathForTest(confBase["source"].(string)))
 }
 
 func defaultRetryConfig() RetryConfig {

@@ -45,9 +45,6 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	pageArg := args[0]
 	toParentArg, _ := cmd.Flags().GetString("to-parent")
 	toSpace, _ := cmd.Flags().GetString("to-space")
-	if toSpace == "" {
-		toSpace = defaultSpace(cfgData)
-	}
 	label, _ := cmd.Flags().GetString("label")
 	label = strings.TrimSpace(label)
 	if label == "" {
@@ -91,15 +88,31 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		"page_id":   pageID,
 		"to_parent": toParentArg,
 		"parent_id": parentID,
-		"to_space":  toSpace,
+	}
+	if toSpace != "" {
+		target["to_space"] = toSpace
+	}
+
+	var descendants []string
+	if labelTree {
+		descendants, err = collectDescendantIDs(client, pageID)
+		if err != nil {
+			if mode == "json" {
+				errObj, _ := output.ErrorObj(cerrors.FetchFailed, err.Error(), "", "", nil)
+				return output.PrintJSON(output.BuildEnvelope(
+					false, "confluence", "archive",
+					target,
+					nil, nil, []any{errObj}, "", "", "", nil,
+				))
+			}
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return err
+		}
 	}
 
 	if dryRun {
 		labelIDs := []string{pageID}
-		if labelTree {
-			descendants := listDescendants(client, pageID)
-			labelIDs = append(labelIDs, descendants...)
-		}
+		labelIDs = append(labelIDs, descendants...)
 
 		receipt := output.Receipt{
 			OK:     true,
@@ -195,7 +208,6 @@ func runArchive(cmd *cobra.Command, args []string) error {
 	var labelFailures []labelFailure
 	toLabel := []string{pageID}
 	if labelTree {
-		descendants := listDescendants(client, pageID)
 		toLabel = append(toLabel, descendants...)
 	}
 
@@ -258,26 +270,4 @@ func runArchive(cmd *cobra.Command, args []string) error {
 		return &cerrors.CojiraError{Code: cerrors.LabelFailed, Message: "Some labels failed", ExitCode: 1}
 	}
 	return nil
-}
-
-// listDescendants returns all descendant page IDs of the given page.
-func listDescendants(client *Client, rootID string) []string {
-	var out []string
-	stack := []string{rootID}
-	for len(stack) > 0 {
-		pid := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		children, err := client.GetChildren(pid, 100)
-		if err != nil {
-			continue
-		}
-		for _, child := range children {
-			childID, _ := child["id"].(string)
-			if childID != "" {
-				out = append(out, childID)
-				stack = append(stack, childID)
-			}
-		}
-	}
-	return out
 }

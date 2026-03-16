@@ -61,20 +61,6 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return &cerrors.CojiraError{Code: cerrors.InvalidTitle, Message: "Title is required.", ExitCode: 1}
 	}
 
-	if space == "" {
-		exitCode := 2
-		if mode == "json" {
-			errObj, _ := output.ErrorObj(cerrors.OpFailed, "Space key is required (or set confluence.default_space).", "", "", nil)
-			return output.PrintJSON(output.BuildEnvelope(
-				false, "confluence", "create",
-				map[string]any{"title": title},
-				nil, nil, []any{errObj}, "", "", "", &exitCode,
-			))
-		}
-		fmt.Fprintln(os.Stderr, "Error: Space key is required (or set confluence.default_space).")
-		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "Space key is required.", ExitCode: 2}
-	}
-
 	// Read body from file or use empty.
 	var body string
 	if filePath != "" {
@@ -109,6 +95,37 @@ func runCreate(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "Error resolving parent: %v\n", err)
 			return err
 		}
+
+		if space == "" {
+			parentPage, err := client.GetPageByID(parentID, "space")
+			if err != nil {
+				if mode == "json" {
+					errObj, _ := output.ErrorObj(cerrors.FetchFailed, err.Error(), "", "", nil)
+					return output.PrintJSON(output.BuildEnvelope(
+						false, "confluence", "create",
+						map[string]any{"title": title, "parent": parentArg, "parent_id": parentID},
+						nil, nil, []any{errObj}, "", "", "", nil,
+					))
+				}
+				fmt.Fprintf(os.Stderr, "Error fetching parent page %s: %v\n", parentID, err)
+				return err
+			}
+			space = getNestedString(parentPage, "space", "key")
+		}
+	}
+
+	if space == "" {
+		exitCode := 2
+		if mode == "json" {
+			errObj, _ := output.ErrorObj(cerrors.OpFailed, "Space key is required (or set confluence.default_space, or provide --parent).", "", "", nil)
+			return output.PrintJSON(output.BuildEnvelope(
+				false, "confluence", "create",
+				map[string]any{"title": title},
+				nil, nil, []any{errObj}, "", "", "", &exitCode,
+			))
+		}
+		fmt.Fprintln(os.Stderr, "Error: Space key is required (or set confluence.default_space, or provide --parent).")
+		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "Space key is required.", ExitCode: 2}
 	}
 
 	if planMode {
@@ -198,8 +215,15 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	var warnings []any
 	if idemKey != "" {
-		_ = idempotency.Record(idemKey, fmt.Sprintf("confluence.create %s", space))
+		if recErr := idempotency.Record(idemKey, fmt.Sprintf("confluence.create %s", space)); recErr != nil {
+			warnMsg := fmt.Sprintf("Page was created, but the idempotency key could not be saved: %v", recErr)
+			warnings = append(warnings, warnMsg)
+			if mode != "json" && mode != "summary" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
+			}
+		}
 	}
 
 	newPageID := fmt.Sprintf("%v", result["id"])
@@ -224,7 +248,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 					"key": output.IdempotencyKey("confluence.create", space, title, body),
 				},
 			},
-			nil, nil, "", "", "", nil,
+			warnings, nil, "", "", "", nil,
 		))
 	}
 	if mode == "summary" {

@@ -14,6 +14,9 @@ import (
 // clientFromCmd creates a Jira Client from the cobra command's environment.
 func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 	baseURL := strings.TrimSpace(os.Getenv("JIRA_BASE_URL"))
+	if flagURL, _ := cmd.Flags().GetString("base-url"); strings.TrimSpace(flagURL) != "" {
+		baseURL = strings.TrimSpace(flagURL)
+	}
 	token := strings.TrimSpace(os.Getenv("JIRA_API_TOKEN"))
 	email := strings.TrimSpace(os.Getenv("JIRA_EMAIL"))
 	if dotenv.IsPlaceholder(email, "email") {
@@ -60,4 +63,10 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 		},
 		Debug: rc.Debug,
 	})
+}
+
+// ClientFromCmd is the exported wrapper used by the experimental board package
+// to lazily construct a Jira client from the current Cobra command.
+func ClientFromCmd(cmd *cobra.Command) (*Client, error) {
+	return clientFromCmd(cmd)
 }

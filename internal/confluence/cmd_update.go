@@ -204,8 +204,15 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	var warnings []any
 	if idemKey != "" {
-		_ = idempotency.Record(idemKey, fmt.Sprintf("confluence.update %s", pageID))
+		if recErr := idempotency.Record(idemKey, fmt.Sprintf("confluence.update %s", pageID)); recErr != nil {
+			warnMsg := fmt.Sprintf("Page was updated, but the idempotency key could not be saved: %v", recErr)
+			warnings = append(warnings, warnMsg)
+			if mode != "json" && mode != "summary" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
+			}
+		}
 	}
 
 	newVersion := oldVersion + 1
@@ -230,7 +237,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 					"key": output.IdempotencyKey("confluence.update", pageID, title, content),
 				},
 			},
-			nil, nil, "", "", "", nil,
+			warnings, nil, "", "", "", nil,
 		))
 	}
 	if mode == "summary" {

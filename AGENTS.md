@@ -126,11 +126,11 @@ If the user asks for any of these, tell them clearly that it's not available yet
 
 ### Jira
 
-Comments, watchers, issue links (blocks/relates-to/duplicates), attachments, delete issues, worklogs, sprints, board columns/column mapping, filters, dashboards, project administration, user management (beyond `whoami`), components, versions/releases, clone/duplicate issues.
+Comments, watchers, issue links (blocks/relates-to/duplicates), attachments, worklogs, sprints, board columns/column mapping, filters, dashboards, project administration, user management (beyond `whoami`), components, versions/releases, clone/duplicate issues.
 
 ### Confluence
 
-Comments, delete pages (use `archive` instead), page permissions/restrictions, attachments, labels (as a dedicated command), space administration, page history/version comparison, templates, blog posts, content properties, watchers, export to PDF/Word.
+Delete pages (use `archive` instead), page permissions/restrictions, attachments, labels (as a dedicated command), space administration, page history/version comparison, templates, blog posts, content properties, watchers, export to PDF/Word.
 
 ## Presenting results to users
 
@@ -199,8 +199,8 @@ When relaying cojira output to the user, follow these patterns:
 | `bulk-update-summaries` | Bulk rename from CSV/JSON | `cojira jira bulk-update-summaries --file map.csv` |
 | `sync` | Download issues to disk | `cojira jira sync --project PROJ` |
 | `sync-from-dir` | Update issues from local folders | `cojira jira sync-from-dir --root ./tickets` |
-| `board-swimlanes` | (EXP) Manage board swimlanes | `cojira jira --experimental board-swimlanes get 45434` |
-| `board-detail-view` | (EXP) Manage board detail view fields | `cojira jira --experimental board-detail-view get 45434` |
+| `board-swimlanes` | (EXP) Manage board swimlanes via internal Jira APIs | `cojira jira --experimental board-swimlanes get 45434` |
+| `board-detail-view` | (EXP) Manage board detail view fields via internal Jira APIs | `cojira jira --experimental board-detail-view get 45434` |
 
 ### Quick field updates (--set flag)
 

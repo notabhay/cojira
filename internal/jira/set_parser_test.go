@@ -51,9 +51,9 @@ func TestParseSetValueContainingEquals(t *testing.T) {
 func TestParseSetValueContainingColonEquals(t *testing.T) {
 	field, op, value, err := ParseSetExpr("summary=text:=notjson")
 	require.NoError(t, err)
-	assert.Equal(t, "summary=text", field)
-	assert.Equal(t, ":=", op)
-	assert.Equal(t, "notjson", value)
+	assert.Equal(t, "summary", field)
+	assert.Equal(t, "=", op)
+	assert.Equal(t, "text:=notjson", value)
 }
 
 func TestParseSetInvalidNoOperator(t *testing.T) {

@@ -165,6 +165,7 @@ func (c *Client) requestWithURL(method, requestURL string, body []byte, params u
 	cfg := c.retryConfig
 	if method != "GET" && method != "HEAD" {
 		cfg.RetryExceptions = false
+		cfg.RetryStatuses = map[int]bool{}
 	}
 
 	requestFn := func() (*http.Response, error) {
@@ -201,6 +202,9 @@ func (c *Client) requestWithURL(method, requestURL string, body []byte, params u
 		case 403:
 			code = cerrors.HTTP403
 			hint = cerrors.HintPermission()
+		case 404:
+			code = cerrors.HTTP404
+			hint = cerrors.HintBaseURL()
 		case 429:
 			code = cerrors.HTTP429
 			hint = cerrors.HintRateLimit()
@@ -213,6 +217,41 @@ func (c *Client) requestWithURL(method, requestURL string, body []byte, params u
 		}
 	}
 
+	return resp, nil
+}
+
+// RequestRaw makes an HTTP request to the Confluence REST API without turning
+// HTTP 4xx/5xx responses into errors. Network and timeout failures are still
+// wrapped in CojiraError values.
+func (c *Client) RequestRaw(method, path string, body []byte, params url.Values) (*http.Response, error) {
+	requestURL := c.restBase + path
+	method = strings.ToUpper(method)
+
+	cfg := c.retryConfig
+	if method != "GET" && method != "HEAD" {
+		cfg.RetryExceptions = false
+		cfg.RetryStatuses = map[int]bool{}
+	}
+
+	resp, err := httpclient.RequestWithRetry(func() (*http.Response, error) {
+		return c.doRequest(method, requestURL, body, params)
+	}, cfg, c.onRetry)
+	if err != nil {
+		if isTimeoutError(err) {
+			timeout := c.timeout.Seconds()
+			return nil, &cerrors.CojiraError{
+				Code:     cerrors.Timeout,
+				Message:  fmt.Sprintf("Request timed out: %s %s", method, requestURL),
+				Hint:     cerrors.HintTimeout(&timeout),
+				ExitCode: 1,
+			}
+		}
+		return nil, &cerrors.CojiraError{
+			Code:     cerrors.HTTPError,
+			Message:  fmt.Sprintf("Network error: %v", err),
+			ExitCode: 1,
+		}
+	}
 	return resp, nil
 }
 
@@ -392,6 +431,51 @@ func (c *Client) ListSpaces(limit, start int) (map[string]any, error) {
 	return decodeJSON(resp)
 }
 
+// GetPageComments fetches page comments with pagination.
+func (c *Client) GetPageComments(pageID string, limit int, expand string) ([]map[string]any, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var out []map[string]any
+	start := 0
+
+	for {
+		params := url.Values{}
+		params.Set("limit", fmt.Sprintf("%d", limit))
+		params.Set("start", fmt.Sprintf("%d", start))
+		if expand != "" {
+			params.Set("expand", expand)
+		}
+
+		resp, err := c.Request("GET", "/content/"+pageID+"/child/comment", nil, params)
+		if err != nil {
+			return nil, err
+		}
+
+		data, err := decodeJSON(resp)
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		results, ok := data["results"].([]any)
+		if !ok || len(results) == 0 {
+			break
+		}
+		for _, item := range results {
+			if comment, ok := item.(map[string]any); ok {
+				out = append(out, comment)
+			}
+		}
+		if len(results) < limit {
+			break
+		}
+		start += len(results)
+	}
+
+	return out, nil
+}
+
 // MovePage moves a Confluence page under a new parent.
 func (c *Client) MovePage(pageID, targetParentID string) (map[string]any, error) {
 	// First get the current page to get the version and title
@@ -422,6 +506,14 @@ func (c *Client) MovePage(pageID, targetParentID string) (map[string]any, error)
 
 func decodeJSON(resp *http.Response) (map[string]any, error) {
 	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func decodeAnyJSON(resp *http.Response) (any, error) {
+	var result any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}

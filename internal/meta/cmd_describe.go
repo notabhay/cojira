@@ -8,6 +8,7 @@ import (
 
 	"github.com/notabhay/cojira/internal/cli"
 	"github.com/notabhay/cojira/internal/dotenv"
+	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/notabhay/cojira/internal/version"
 	"github.com/spf13/cobra"
@@ -54,23 +55,32 @@ func buildCommandManifest(cmd *cobra.Command) map[string]any {
 // buildFlagSpecs extracts non-hidden flag specs from a command.
 func buildFlagSpecs(cmd *cobra.Command) []map[string]any {
 	var specs []map[string]any
-	cmd.Flags().VisitAll(func(f *pflag.Flag) {
-		if f.Hidden {
+	seen := map[string]bool{}
+	appendFlags := func(fs *pflag.FlagSet) {
+		if fs == nil {
 			return
 		}
-		spec := map[string]any{
-			"dest":     f.Name,
-			"help":     f.Usage,
-			"required": false,
-			"default":  f.DefValue,
-		}
-		if f.Shorthand != "" {
-			spec["options"] = []string{"-" + f.Shorthand, "--" + f.Name}
-		} else {
-			spec["options"] = []string{"--" + f.Name}
-		}
-		specs = append(specs, spec)
-	})
+		fs.VisitAll(func(f *pflag.Flag) {
+			if f.Hidden || seen[f.Name] {
+				return
+			}
+			seen[f.Name] = true
+			spec := map[string]any{
+				"dest":     f.Name,
+				"help":     f.Usage,
+				"required": false,
+				"default":  f.DefValue,
+			}
+			if f.Shorthand != "" {
+				spec["options"] = []string{"-" + f.Shorthand, "--" + f.Name}
+			} else {
+				spec["options"] = []string{"--" + f.Name}
+			}
+			specs = append(specs, spec)
+		})
+	}
+	appendFlags(cmd.InheritedFlags())
+	appendFlags(cmd.NonInheritedFlags())
 	return specs
 }
 
@@ -163,7 +173,7 @@ func buildContext(rootCmd *cobra.Command) map[string]any {
 			"error":   c.Error,
 		}
 		checksOut = append(checksOut, obj)
-		if !c.OK {
+		if !c.OK && setupErrorRequiresInit(c.Error) {
 			setupNeeded = true
 		}
 		if c.OK && c.Details != nil {
@@ -178,6 +188,8 @@ func buildContext(rootCmd *cobra.Command) map[string]any {
 		"setup_needed":     setupNeeded,
 		"configured_tools": configuredToolsFromEnv(),
 		"current_user":     currentUser,
+		"env_loading":      dotenv.LastLoadResult(),
+		"env_sources":      envSourcesReport(),
 	}
 }
 
@@ -244,17 +256,21 @@ func agentPrompt(manifest map[string]any) string {
 	lines = append(lines, `- Jira bulk transition: `+"`"+`cojira jira bulk-transition --jql '...' --to "Done" --dry-run`+"`")
 	lines = append(lines, "- Confluence copy tree: `cojira confluence copy-tree <page> <parent> --dry-run`")
 	lines = append(lines, "- Confluence archive: `cojira confluence archive <page> --to-parent <parent> --dry-run`")
-	lines = append(lines, "- Board detail view (experimental): `cojira jira --experimental board-detail-view get <board>`")
-	lines = append(lines, "- Board swimlanes (experimental): `cojira jira --experimental board-swimlanes get <board>`")
+	lines = append(lines, "- Board detail view (experimental, internal Jira APIs): `cojira jira --experimental board-detail-view get <board>`")
+	lines = append(lines, "- Board swimlanes (experimental, internal Jira APIs): `cojira jira --experimental board-swimlanes get <board>`")
 	lines = append(lines, "- Preview any command: `cojira plan <tool> <cmd> ...`")
 	lines = append(lines, "- Defaults: optional `.cojira.json` (default project/space/root page)")
 	lines = append(lines, "")
 	lines = append(lines, "Not supported (tell the user clearly if asked):")
-	lines = append(lines, "- Jira: comments, watchers, issue links, attachments, delete, worklogs, sprints, board columns, filters, dashboards, project admin")
-	lines = append(lines, "- Confluence: comments, delete pages, permissions, attachments, labels (dedicated), space admin, page versions, templates, blog posts")
+	lines = append(lines, "- Jira: comments, watchers, issue links, attachments, worklogs, sprints, board columns, filters, dashboards, project admin")
+	lines = append(lines, "- Confluence: delete pages, permissions, attachments, labels (dedicated), space admin, page versions, templates, blog posts")
 	lines = append(lines, "")
 	lines = append(lines, "Common workflows:")
 	lines = append(lines, "- Confluence: `cojira confluence info <page> --output-mode json` -> `get` -> edit XHTML -> `update`")
+	lines = append(lines, "- Confluence rendered view: `cojira confluence view <page> --output-mode json`")
+	lines = append(lines, "- Confluence comments: `cojira confluence comments <page> --output-mode json`")
+	lines = append(lines, "- Confluence raw passthrough: `cojira confluence raw GET /content/<id>/child/comment?expand=body.view --output-mode json`")
+	lines = append(lines, "- Jira raw passthrough: `cojira jira raw GET /issue/<key> --output-mode json`")
 	lines = append(lines, "- Jira: `cojira jira info <issue> --output-mode json` -> `update --dry-run` -> apply")
 	return strings.Join(lines, "\n")
 }
@@ -296,11 +312,26 @@ func identList(identifiers map[string]any, key string) []string {
 	return list
 }
 
+func setupErrorRequiresInit(errObj map[string]any) bool {
+	if errObj == nil {
+		return false
+	}
+	code, _ := errObj["code"].(string)
+	switch code {
+	case cerrors.ConfigMissingEnv, cerrors.ConfigInvalid, cerrors.HTTP401, cerrors.HTTP403, cerrors.HTTP404:
+		return true
+	default:
+		return false
+	}
+}
+
 func runDescribe(cmd *cobra.Command, rootCmd *cobra.Command) error {
-	dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
+	loadResult := dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
 	cli.NormalizeOutputMode(cmd)
 
 	manifest := buildManifest(rootCmd)
+	manifest["env_loading"] = loadResult
+	manifest["env_sources"] = envSourcesReport()
 
 	agentPromptFlag, _ := cmd.Flags().GetBool("agent-prompt")
 	if agentPromptFlag || !cli.IsJSON(cmd) {

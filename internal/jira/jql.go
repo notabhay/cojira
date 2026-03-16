@@ -7,8 +7,7 @@ import (
 )
 
 var (
-	projectEqualsRe = regexp.MustCompile(`(?i)\bproject\s*=`)
-	projectInRe     = regexp.MustCompile(`(?i)\bproject\s+in\b`)
+	projectClauseRe = regexp.MustCompile(`(?i)\bproject\s*(?:=|!=|in\b|not\s+in\b|is\b|is\s+not\b)`)
 	orderByRe       = regexp.MustCompile(`(?i)\border\s+by\b`)
 )
 
@@ -31,6 +30,8 @@ func JQLValue(value string) string {
 	if strings.HasPrefix(raw, "-") {
 		return raw
 	}
+	raw = strings.ReplaceAll(raw, `\`, `\\`)
+	raw = strings.ReplaceAll(raw, `"`, `\"`)
 	return fmt.Sprintf(`"%s"`, raw)
 }
 
@@ -91,10 +92,7 @@ func StripJQLOrderBy(jql string) string {
 // outside of quoted strings.
 func JQLHasProject(jql string) bool {
 	sanitized := StripJQLStrings(jql)
-	if projectEqualsRe.MatchString(sanitized) {
-		return true
-	}
-	return projectInRe.MatchString(sanitized)
+	return projectClauseRe.MatchString(sanitized)
 }
 
 // FixJQLShellEscapes fixes common shell-mangled JQL operators

@@ -19,6 +19,7 @@ func NewInfoCmd() *cobra.Command {
 	}
 	cmd.Flags().String("fields", "", "Fields to request (comma-separated)")
 	cmd.Flags().Bool("summary", false, "Print a compact summary")
+	cmd.Flags().Bool("full", false, "Include the description in human output")
 	cli.AddOutputFlags(cmd, true)
 	return cmd
 }
@@ -33,10 +34,14 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	issueID := ResolveIssueIdentifier(args[0])
 	fieldsFlag, _ := cmd.Flags().GetString("fields")
 	summaryFlag, _ := cmd.Flags().GetBool("summary")
+	fullFlag, _ := cmd.Flags().GetBool("full")
 
 	fields := fieldsFlag
 	if fields == "" {
 		fields = "summary,status,issuetype,assignee,reporter,priority,project,created,updated,labels,components,fixVersions,versions,duedate"
+		if mode == "json" || fullFlag {
+			fields += ",description"
+		}
 	}
 
 	issue, err := client.GetIssue(issueID, fields, "")
@@ -62,6 +67,7 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		"created":     fd["created"],
 		"updated":     fd["updated"],
 		"due":         fd["duedate"],
+		"description": fd["description"],
 		"labels":      safeStringSlice(fd, "labels"),
 		"components":  extractNames(fd, "components"),
 		"fixVersions": extractNames(fd, "fixVersions"),
@@ -153,6 +159,9 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Components: %s\n", componentsStr)
 	fmt.Printf("FixVersions: %s\n", fixVersionsStr)
 	fmt.Printf("Versions:  %s\n", versionsStr)
+	if fullFlag {
+		fmt.Printf("Description:\n%v\n", stringOr(info["description"], ""))
+	}
 	fmt.Printf("URL:       %v\n", info["url"])
 	return nil
 }

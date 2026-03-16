@@ -371,10 +371,10 @@ func writeEnvFile(path string, values map[string]string) {
 	}
 	lines = append(lines, "")
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
-	_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+	_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o600)
 }
 
 var browseProjectRe = regexp.MustCompile(`/browse/([A-Za-z][A-Za-z0-9_]+)-\d+`)

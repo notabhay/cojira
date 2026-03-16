@@ -86,20 +86,19 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 
 	// Dry-run: count pages in tree.
 	if dryRun {
-		count := 1
-		stack := []string{pageID}
-		for len(stack) > 0 {
-			pid := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			children, _ := client.GetChildren(pid, 100)
-			for _, child := range children {
-				childID, _ := child["id"].(string)
-				if childID != "" {
-					count++
-					stack = append(stack, childID)
-				}
+		descendants, treeErr := collectDescendantIDs(client, pageID)
+		if treeErr != nil {
+			if mode == "json" {
+				errObj, _ := output.ErrorObj(cerrors.FetchFailed, treeErr.Error(), "", "", nil)
+				return output.PrintJSON(output.BuildEnvelope(
+					false, "confluence", "copy-tree", target,
+					nil, nil, []any{errObj}, "", "", "", nil,
+				))
 			}
+			fmt.Fprintf(os.Stderr, "Error: %v\n", treeErr)
+			return treeErr
 		}
+		count := 1 + len(descendants)
 
 		receipt := output.Receipt{
 			OK:      true,
@@ -140,22 +139,18 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 		"copyDescendants":   true,
 	})
 
-	resp, nativeErr := client.Request("POST", copyPath, copyBody, nil)
-	nativeSuccess := false
+	resp, nativeErr := client.RequestRaw("POST", copyPath, copyBody, nil)
 
 	if nativeErr != nil {
-		if strict {
-			if mode == "json" {
-				errObj, _ := output.ErrorObj(cerrors.HTTPError, nativeErr.Error(), "", "", nil)
-				return output.PrintJSON(output.BuildEnvelope(
-					false, "confluence", "copy-tree", target,
-					nil, nil, []any{errObj}, "", "", "", nil,
-				))
-			}
-			fmt.Fprintf(os.Stderr, "Error: %v\n", nativeErr)
-			return nativeErr
+		if mode == "json" {
+			errObj, _ := output.ErrorObj(cerrors.HTTPError, nativeErr.Error(), "", "", nil)
+			return output.PrintJSON(output.BuildEnvelope(
+				false, "confluence", "copy-tree", target,
+				nil, nil, []any{errObj}, "", "", "", nil,
+			))
 		}
-		// Fall through to manual copy.
+		fmt.Fprintf(os.Stderr, "Error: %v\n", nativeErr)
+		return nativeErr
 	} else {
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode == 404 || resp.StatusCode == 405 {
@@ -229,10 +224,6 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if nativeSuccess {
-		return nil // Already returned above; unreachable.
-	}
-
 	// Manual fallback: copy pages by creating new pages with the same storage XHTML.
 	parentPage, err := client.GetPageByID(parentID, "space")
 	if err != nil {
@@ -267,6 +258,17 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 		Title string `json:"title"`
 	}
 	var created []createdPage
+	if _, err := collectDescendantIDs(client, pageID); err != nil {
+		if mode == "json" {
+			errObj, _ := output.ErrorObj(cerrors.FetchFailed, err.Error(), "", "", nil)
+			return output.PrintJSON(output.BuildEnvelope(
+				false, "confluence", "copy-tree", target,
+				nil, nil, []any{errObj}, "", "", "", nil,
+			))
+		}
+		fmt.Fprintf(os.Stderr, "Error copying tree: %v\n", err)
+		return err
+	}
 
 	var copyRecursive func(srcID, dstParent string) (string, error)
 	copyRecursive = func(srcID, dstParent string) (string, error) {
@@ -283,7 +285,10 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 		}
 		created = append(created, createdPage{SrcID: srcID, DstID: newID, Title: newTitle})
 
-		children, _ := client.GetChildren(srcID, 100)
+		children, err := client.GetChildren(srcID, 100)
+		if err != nil {
+			return "", err
+		}
 		for _, child := range children {
 			childID, _ := child["id"].(string)
 			if childID != "" {
@@ -313,7 +318,7 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 		OK:      true,
 		Message: fmt.Sprintf("Copied tree %s -> %s under %s (pages=%d)", pageID, newRootID, parentID, len(created)),
 	}
-	warningMsg := "Manual copy does not include attachments or page restrictions."
+	warningMsg := "Manual copy does not include attachments, comments, history, or page restrictions."
 
 	if mode == "json" {
 		warnObj, _ := output.ErrorObj(cerrors.CopyLimitation, warningMsg, "", "", nil)

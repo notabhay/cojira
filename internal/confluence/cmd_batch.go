@@ -169,7 +169,9 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	var items []map[string]any
 	successCount := 0
 	failureCount := 0
+	skippedCount := 0
 	var failures []string
+	var warningObjs []any
 
 	for idx, opAny := range operations {
 		op, ok := opAny.(map[string]any)
@@ -180,6 +182,21 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		opType = strings.ToLower(opType)
 		desc := ""
 		item := map[string]any{"op": opType, "ok": false}
+		opKey := ""
+		if idemKey != "" && !dryRun {
+			opKey = fmt.Sprintf("%s.op.%04d", idemKey, idx)
+			if idempotency.IsDuplicate(opKey) {
+				item["ok"] = true
+				item["skipped"] = true
+				item["reason"] = "idempotency_checkpoint_already_used"
+				receipt := output.Receipt{OK: true, Message: fmt.Sprintf("Skipped %s (already completed in a prior batch attempt)", stringOr(desc, opType))}
+				item["receipt"] = receipt.Format()
+				items = append(items, item)
+				skippedCount++
+				output.EmitProgress(mode, quiet, idx+1, len(operations), stringOr(desc, opType), "SKIPPED")
+				continue
+			}
+		}
 
 		opErr := executeBatchOp(client, op, opType, basePath, dryRun, &desc, item)
 		if opErr != nil {
@@ -198,6 +215,16 @@ func runBatch(cmd *cobra.Command, args []string) error {
 			item["receipt"] = receipt.Format()
 			if mode != "json" && !quiet && mode != "summary" {
 				fmt.Println(receipt.Format())
+			}
+			if opKey != "" {
+				if recErr := idempotency.Record(opKey, desc); recErr != nil {
+					warnMsg := fmt.Sprintf("%s: operation succeeded, but the idempotency checkpoint could not be saved: %v", desc, recErr)
+					item["idempotency_warning"] = warnMsg
+					warningObjs = append(warningObjs, warnMsg)
+					if mode != "json" && !quiet && mode != "summary" {
+						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
+					}
+				}
 			}
 			successCount++
 		}
@@ -219,11 +246,18 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		"total":   len(operations),
 		"ok":      successCount,
 		"failed":  failureCount,
+		"skipped": skippedCount,
 		"dry_run": dryRun,
 	}
 
 	if idemKey != "" && !dryRun && failureCount == 0 {
-		_ = idempotency.Record(idemKey, fmt.Sprintf("confluence.batch %s", configFile))
+		if recErr := idempotency.Record(idemKey, fmt.Sprintf("confluence.batch %s", configFile)); recErr != nil {
+			warnMsg := fmt.Sprintf("Batch completed, but the idempotency completion marker could not be saved: %v", recErr)
+			warningObjs = append(warningObjs, warnMsg)
+			if mode != "json" && !quiet && mode != "summary" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
+			}
+		}
 	}
 
 	if mode == "json" {
@@ -239,7 +273,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		return output.PrintJSON(output.BuildEnvelope(
 			failureCount == 0, "confluence", "batch", target,
 			map[string]any{"items": items, "summary": summary, "request_id": reqID},
-			nil, errObjs, "", "", "", nil,
+			warningObjs, errObjs, "", "", "", nil,
 		))
 	}
 

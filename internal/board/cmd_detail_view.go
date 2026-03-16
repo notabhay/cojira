@@ -20,6 +20,7 @@ func NewBoardDetailViewCmd(clientFn func(cmd *cobra.Command) (*jira.Client, erro
 		Use:   "board-detail-view",
 		Short: "(EXPERIMENTAL) Manage Jira board Issue Detail View fields (GreenHopper)",
 		Long: "EXPERIMENTAL: Configure Jira Software board Issue Detail View fields using internal GreenHopper REST APIs.\n" +
+			"These endpoints are not part of Jira's stable public API and may break after Jira upgrades.\n" +
 			"Requires: `cojira jira --experimental ...`",
 		SilenceUsage:  true,
 		SilenceErrors: true,

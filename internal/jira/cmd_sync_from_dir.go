@@ -74,7 +74,7 @@ func runSyncFromDir(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Find matching directories.
-	matches, err := filepath.Glob(filepath.Join(root, pattern))
+	matches, err := findMatchingDirs(root, pattern)
 	if err != nil {
 		return err
 	}
@@ -131,7 +131,16 @@ func runSyncFromDir(cmd *cobra.Command, _ []string) error {
 		}
 
 		// Find spec files.
-		specDir := filepath.Join(ticketDir, ticketSubdir)
+		specDir, err := safeJoinUnder(ticketDir, ticketSubdir)
+		if err != nil {
+			failures = append(failures, failureEntry{key: issueID, err: err.Error()})
+			item["error"] = err.Error()
+			r := output.Receipt{OK: false, Message: fmt.Sprintf("%s: %v", issueID, err)}
+			item["receipt"] = r.Format()
+			items = append(items, item)
+			output.EmitProgress(mode, quiet, idx+1, len(dirs), issueID, "FAILED")
+			continue
+		}
 		specMatches, _ := filepath.Glob(filepath.Join(specDir, specGlob))
 		sort.Strings(specMatches)
 		if len(specMatches) == 0 {

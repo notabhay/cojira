@@ -2,6 +2,7 @@ package meta
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -91,11 +92,10 @@ func TestNonInteractiveJSONExits3(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, 3, exitErr.Code)
 
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	if n > 0 {
+	buf, _ := io.ReadAll(r)
+	if len(buf) > 0 {
 		var payload map[string]any
-		jsonErr := json.Unmarshal(buf[:n], &payload)
+		jsonErr := json.Unmarshal(buf, &payload)
 		if jsonErr == nil {
 			assert.Equal(t, float64(3), payload["exit_code"])
 			assert.Equal(t, false, payload["ok"])

@@ -6,6 +6,37 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+)
+
+const (
+	// SourceEnvironment indicates a key came from the inherited process
+	// environment rather than a loaded file.
+	SourceEnvironment = "environment"
+)
+
+// LoadResult describes a single dotenv load attempt.
+type LoadResult struct {
+	CandidatePaths      []string          `json:"candidate_paths"`
+	LoadedPath          string            `json:"loaded_path,omitempty"`
+	LoadedPaths         []string          `json:"loaded_paths,omitempty"`
+	KeysSet             []string          `json:"keys_set"`
+	KeysSkippedExisting []string          `json:"keys_skipped_existing"`
+	KeySources          map[string]string `json:"key_sources"`
+	LoadErrors          map[string]string `json:"load_errors,omitempty"`
+}
+
+var (
+	loadStateMu    sync.RWMutex
+	lastLoadResult = LoadResult{
+		CandidatePaths:      []string{},
+		LoadedPaths:         []string{},
+		KeysSet:             []string{},
+		KeysSkippedExisting: []string{},
+		KeySources:          map[string]string{},
+		LoadErrors:          map[string]string{},
+	}
+	keySources = map[string]string{}
 )
 
 // CredentialsPath returns the default path for global cojira credentials
@@ -75,8 +106,17 @@ func DefaultSearchPaths() []string {
 
 // LoadIfPresent loads the first existing .env file from paths.
 // It sets environment variables that are not already set.
-// Returns the path of the loaded file, or empty string if none was loaded.
-func LoadIfPresent(paths []string) string {
+// Returns a detailed result for the load attempt.
+func LoadIfPresent(paths []string) LoadResult {
+	result := LoadResult{
+		CandidatePaths:      append([]string(nil), paths...),
+		LoadedPaths:         []string{},
+		KeysSet:             []string{},
+		KeysSkippedExisting: []string{},
+		KeySources:          map[string]string{},
+		LoadErrors:          map[string]string{},
+	}
+
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil || info.IsDir() {
@@ -84,18 +124,30 @@ func LoadIfPresent(paths []string) string {
 		}
 		data, err := os.ReadFile(p)
 		if err != nil {
-			return ""
+			result.LoadErrors[p] = err.Error()
+			continue
 		}
+		if result.LoadedPath == "" {
+			result.LoadedPath = p
+		}
+		result.LoadedPaths = append(result.LoadedPaths, p)
 		values := ParseLines(string(data))
 		for key, value := range values {
 			if _, exists := os.LookupEnv(key); exists {
+				result.KeysSkippedExisting = append(result.KeysSkippedExisting, key)
+				source := sourceForExistingKey(key)
+				result.KeySources[key] = source
+				trackKeySource(key, source)
 				continue
 			}
 			_ = os.Setenv(key, value)
+			result.KeysSet = append(result.KeysSet, key)
+			result.KeySources[key] = p
+			trackKeySource(key, p)
 		}
-		return p
 	}
-	return ""
+	setLastLoadResult(result)
+	return result
 }
 
 // placeholders is the set of known template placeholder values.
@@ -123,4 +175,103 @@ func IsPlaceholder(value string, field string) bool {
 		return strings.HasPrefix(lower, "your") && strings.Contains(lower, "@example")
 	}
 	return false
+}
+
+// LastLoadResult returns the most recent dotenv load attempt.
+func LastLoadResult() LoadResult {
+	loadStateMu.RLock()
+	defer loadStateMu.RUnlock()
+	return cloneLoadResult(lastLoadResult)
+}
+
+// SourceForKey returns the tracked source for an environment variable.
+// It falls back to "environment" when the key is present but was not set by
+// a tracked dotenv load in this process.
+func SourceForKey(key string) string {
+	loadStateMu.RLock()
+	source := keySources[key]
+	loadStateMu.RUnlock()
+	if source != "" {
+		return source
+	}
+	if _, exists := os.LookupEnv(key); exists {
+		return SourceEnvironment
+	}
+	return ""
+}
+
+// Provenance reports whether each key is present and where it came from.
+func Provenance(keys []string) map[string]map[string]any {
+	report := make(map[string]map[string]any, len(keys))
+	for _, key := range keys {
+		_, present := os.LookupEnv(key)
+		report[key] = map[string]any{
+			"present": present,
+			"source":  SourceForKey(key),
+		}
+	}
+	return report
+}
+
+// ResetTracking clears tracked dotenv state. It exists for tests and any
+// workflows that need to explicitly discard previous in-process provenance.
+func ResetTracking() {
+	loadStateMu.Lock()
+	defer loadStateMu.Unlock()
+	lastLoadResult = LoadResult{
+		CandidatePaths:      []string{},
+		LoadedPaths:         []string{},
+		KeysSet:             []string{},
+		KeysSkippedExisting: []string{},
+		KeySources:          map[string]string{},
+		LoadErrors:          map[string]string{},
+	}
+	keySources = map[string]string{}
+}
+
+func trackKeySource(key, source string) {
+	if key == "" || source == "" {
+		return
+	}
+	loadStateMu.Lock()
+	defer loadStateMu.Unlock()
+	if keySources == nil {
+		keySources = map[string]string{}
+	}
+	keySources[key] = source
+}
+
+func sourceForExistingKey(key string) string {
+	loadStateMu.RLock()
+	source := keySources[key]
+	loadStateMu.RUnlock()
+	if source != "" {
+		return source
+	}
+	return SourceEnvironment
+}
+
+func setLastLoadResult(result LoadResult) {
+	loadStateMu.Lock()
+	defer loadStateMu.Unlock()
+	lastLoadResult = cloneLoadResult(result)
+}
+
+func cloneLoadResult(result LoadResult) LoadResult {
+	cp := LoadResult{
+		CandidatePaths:      append([]string(nil), result.CandidatePaths...),
+		LoadedPath:          result.LoadedPath,
+		LoadedPaths:         append([]string(nil), result.LoadedPaths...),
+		KeysSet:             append([]string(nil), result.KeysSet...),
+		KeysSkippedExisting: append([]string(nil), result.KeysSkippedExisting...),
+		KeySources:          map[string]string{},
+		LoadErrors:          map[string]string{},
+	}
+	for key, source := range result.KeySources {
+		cp.KeySources[key] = source
+	}
+	for path, msg := range result.LoadErrors {
+		cp.LoadErrors[path] = msg
+	}
+	return cp
 }

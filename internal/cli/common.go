@@ -9,6 +9,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func resolveOutputMode(cmd *cobra.Command) string {
+	mode, _ := cmd.Flags().GetString("output-mode")
+	if mode == "" {
+		mode = output.GetMode()
+	}
+	if mode == "auto" {
+		if output.IsTTY(int(os.Stdout.Fd())) {
+			mode = "human"
+		} else {
+			mode = "json"
+		}
+	}
+	if mode != "human" && mode != "json" && mode != "summary" {
+		mode = "human"
+	}
+	return mode
+}
+
 // AddOutputFlags registers --output-mode (and optionally --quiet) on cmd.
 func AddOutputFlags(cmd *cobra.Command, includeQuiet bool) {
 	defaultMode := os.Getenv("COJIRA_OUTPUT_MODE")
@@ -40,31 +58,19 @@ func AddIdempotencyFlags(cmd *cobra.Command) {
 // "human" or "json" depending on TTY, updates the global output mode,
 // and returns the resolved mode string.
 func NormalizeOutputMode(cmd *cobra.Command) string {
-	mode, _ := cmd.Flags().GetString("output-mode")
-	if mode == "auto" {
-		if output.IsTTY(int(os.Stdout.Fd())) {
-			mode = "human"
-		} else {
-			mode = "json"
-		}
-	}
-	if mode != "human" && mode != "json" && mode != "summary" {
-		mode = "human"
-	}
+	mode := resolveOutputMode(cmd)
 	output.SetMode(mode)
 	return mode
 }
 
 // IsJSON returns true if the resolved output mode is "json".
 func IsJSON(cmd *cobra.Command) bool {
-	mode, _ := cmd.Flags().GetString("output-mode")
-	return mode == "json"
+	return resolveOutputMode(cmd) == "json"
 }
 
 // IsSummary returns true if the resolved output mode is "summary".
 func IsSummary(cmd *cobra.Command) bool {
-	mode, _ := cmd.Flags().GetString("output-mode")
-	return mode == "summary"
+	return resolveOutputMode(cmd) == "summary"
 }
 
 // ApplyPlanFlag sets --dry-run and --diff to true when --plan is set.

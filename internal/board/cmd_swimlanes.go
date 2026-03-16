@@ -24,6 +24,7 @@ func NewBoardSwimlanesCmd(clientFn func(cmd *cobra.Command) (*jira.Client, error
 		Use:   "board-swimlanes",
 		Short: "(EXPERIMENTAL) Manage Jira board swimlanes (GreenHopper)",
 		Long: "EXPERIMENTAL: Configure Jira Software board swimlanes using internal GreenHopper REST APIs.\n" +
+			"These endpoints are not part of Jira's stable public API and may break after Jira upgrades.\n" +
 			"Requires: `cojira jira --experimental ...`",
 		SilenceUsage:  true,
 		SilenceErrors: true,

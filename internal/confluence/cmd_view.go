@@ -10,22 +10,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// NewGetCmd creates the "get" subcommand.
-func NewGetCmd() *cobra.Command {
+// NewViewCmd creates the "view" subcommand.
+func NewViewCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "get <page>",
-		Short: "Download page content",
+		Use:   "view <page>",
+		Short: "Fetch rendered page content for reading",
 		Args:  cobra.ExactArgs(1),
-		RunE:  runGet,
+		RunE:  runView,
 	}
 	cmd.Flags().StringP("output", "o", "", "Output file (default: stdout)")
-	cmd.Flags().String("representation", "storage", "Content representation to fetch: storage, view")
 	cli.AddOutputFlags(cmd, true)
 	cli.AddHTTPRetryFlags(cmd)
 	return cmd
 }
 
-func runGet(cmd *cobra.Command, args []string) error {
+func runView(cmd *cobra.Command, args []string) error {
 	mode := cli.NormalizeOutputMode(cmd)
 	client, err := clientFromCmd(cmd)
 	if err != nil {
@@ -35,29 +34,12 @@ func runGet(cmd *cobra.Command, args []string) error {
 	cfgData := loadProjectConfigData()
 	defPageID := defaultPageID(cfgData)
 	pageArg := args[0]
-	representation, _ := cmd.Flags().GetString("representation")
-
-	if representation != "storage" && representation != "view" {
-		msg := "Invalid --representation. Use 'storage' or 'view'."
-		if mode == "json" {
-			errObj, _ := output.ErrorObj(cerrors.OpFailed, msg, "", "", nil)
-			ec := 2
-			return output.PrintJSON(output.BuildEnvelope(
-				false, "confluence", "get",
-				map[string]any{"page": pageArg},
-				nil, nil, []any{errObj}, "", "", "", &ec,
-			))
-		}
-		fmt.Fprintf(os.Stderr, "Error: %s\n", msg)
-		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: msg, ExitCode: 2}
-	}
-
 	pageID, err := ResolvePageID(client, pageArg, defPageID)
 	if err != nil {
 		if mode == "json" {
 			errObj, _ := output.ErrorObj(cerrors.IdentUnresolved, err.Error(), cerrors.HintIdentifier(ConfluenceIdentifierFormats), "", nil)
 			return output.PrintJSON(output.BuildEnvelope(
-				false, "confluence", "get",
+				false, "confluence", "view",
 				map[string]any{"page": pageArg},
 				nil, nil, []any{errObj}, "", "", "", nil,
 			))
@@ -66,12 +48,12 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	page, err := client.GetPageByID(pageID, "body."+representation)
+	page, err := client.GetPageByID(pageID, "body.view")
 	if err != nil {
 		if mode == "json" {
 			errObj, _ := output.ErrorObj(cerrors.FetchFailed, err.Error(), "", "", nil)
 			return output.PrintJSON(output.BuildEnvelope(
-				false, "confluence", "get",
+				false, "confluence", "view",
 				map[string]any{"page": pageArg, "page_id": pageID},
 				nil, nil, []any{errObj}, "", "", "", nil,
 			))
@@ -80,7 +62,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	content := getNestedString(page, "body", representation, "value")
+	content := getNestedString(page, "body", "view", "value")
 	outputFile, _ := cmd.Flags().GetString("output")
 
 	if outputFile != "" {
@@ -89,30 +71,30 @@ func runGet(cmd *cobra.Command, args []string) error {
 		}
 		if mode == "json" {
 			return output.PrintJSON(output.BuildEnvelope(
-				true, "confluence", "get",
+				true, "confluence", "view",
 				map[string]any{"page": pageArg, "page_id": pageID},
-				map[string]any{"saved_to": outputFile, "representation": representation},
+				map[string]any{"saved_to": outputFile, "representation": "view"},
 				nil, nil, "", "", "", nil,
 			))
 		}
 		if mode == "summary" {
-			fmt.Printf("Saved page %s (%s) to %s.\n", pageID, representation, outputFile)
+			fmt.Printf("Saved rendered page %s to %s.\n", pageID, outputFile)
 			return nil
 		}
-		fmt.Printf("Saved %s content to: %s\n", representation, outputFile)
+		fmt.Printf("Saved rendered content to: %s\n", outputFile)
 		return nil
 	}
 
 	if mode == "json" {
 		return output.PrintJSON(output.BuildEnvelope(
-			true, "confluence", "get",
+			true, "confluence", "view",
 			map[string]any{"page": pageArg, "page_id": pageID},
-			map[string]any{"content": content, "representation": representation},
+			map[string]any{"content": content, "representation": "view"},
 			nil, nil, "", "", "", nil,
 		))
 	}
 	if mode == "summary" {
-		fmt.Printf("Fetched page %s (%s content omitted in summary mode).\n", pageID, representation)
+		fmt.Printf("Fetched rendered page %s (content omitted in summary mode).\n", pageID)
 		return nil
 	}
 	fmt.Println(content)

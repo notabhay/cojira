@@ -48,7 +48,7 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	page, err := client.GetPageByID(pageID, "version,space,ancestors,children.page")
+	page, err := client.GetPageByID(pageID, "version,history,space,ancestors,children.page")
 	if err != nil {
 		if mode == "json" {
 			errObj, _ := output.ErrorObj(cerrors.FetchFailed, err.Error(), "", "", nil)
@@ -74,16 +74,24 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	childrenResults := getNestedSlice(page, "children", "page", "results")
 	spaceKey := getNestedString(page, "space", "key")
 	versionNum := getNestedFloat(page, "version", "number")
+	lastModified := getNestedString(page, "version", "when")
+	lastModifiedBy := getNestedString(page, "version", "by", "displayName")
+	createdDate := getNestedString(page, "history", "createdDate")
+	createdBy := getNestedString(page, "history", "createdBy", "displayName")
 
 	info := map[string]any{
-		"id":             page["id"],
-		"title":          page["title"],
-		"space":          spaceKey,
-		"version":        int(versionNum),
-		"parent_id":      parentID,
-		"parent_title":   parentTitle,
-		"children_count": len(childrenResults),
-		"url":            fmt.Sprintf("%s/pages/viewpage.action?pageId=%v", client.BaseURL(), page["id"]),
+		"id":               page["id"],
+		"title":            page["title"],
+		"space":            spaceKey,
+		"version":          int(versionNum),
+		"last_modified":    lastModified,
+		"last_modified_by": lastModifiedBy,
+		"created_date":     createdDate,
+		"created_by":       createdBy,
+		"parent_id":        parentID,
+		"parent_title":     parentTitle,
+		"children_count":   len(childrenResults),
+		"url":              fmt.Sprintf("%s/pages/viewpage.action?pageId=%v", client.BaseURL(), page["id"]),
 	}
 
 	if mode == "json" {
@@ -95,7 +103,15 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	}
 
 	if mode == "summary" {
-		fmt.Printf("%v: %v (Space: %s, Version: %d)\n", info["id"], info["title"], spaceKey, int(versionNum))
+		summary := fmt.Sprintf("%v: %v (Space: %s, Version: %d", info["id"], info["title"], spaceKey, int(versionNum))
+		if lastModified != "" {
+			summary += ", Updated: " + lastModified
+			if lastModifiedBy != "" {
+				summary += " by " + lastModifiedBy
+			}
+		}
+		summary += ")"
+		fmt.Println(summary)
 		return nil
 	}
 
@@ -103,6 +119,20 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Title:    %v\n", info["title"])
 	fmt.Printf("Space:    %s\n", spaceKey)
 	fmt.Printf("Version:  %d\n", int(versionNum))
+	if createdDate != "" || createdBy != "" {
+		fmt.Printf("Created:  %s", stringOr(createdDate, "-"))
+		if createdBy != "" {
+			fmt.Printf(" by %s", createdBy)
+		}
+		fmt.Println()
+	}
+	if lastModified != "" || lastModifiedBy != "" {
+		fmt.Printf("Updated:  %s", stringOr(lastModified, "-"))
+		if lastModifiedBy != "" {
+			fmt.Printf(" by %s", lastModifiedBy)
+		}
+		fmt.Println()
+	}
 	if parentID != nil {
 		fmt.Printf("Parent:   %v (%v)\n", parentID, parentTitle)
 	} else {
@@ -153,4 +183,11 @@ func getNestedSlice(m map[string]any, keys ...string) []any {
 	}
 	s, _ := cur.([]any)
 	return s
+}
+
+func stringOr(value string, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }

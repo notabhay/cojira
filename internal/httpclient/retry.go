@@ -129,6 +129,9 @@ func RequestWithRetry(requestFn RequestFunc, config RetryConfig, onRetry OnRetry
 		if attempt >= config.Retries {
 			return resp, nil
 		}
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 
 		var delay time.Duration
 		retryAfterUsed := false

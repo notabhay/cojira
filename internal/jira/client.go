@@ -3,6 +3,7 @@ package jira
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -95,6 +96,17 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		"Content-Type": {"application/json"},
 		"User-Agent":   {cfg.UserAgent},
 	}
+	transport, _ := http.DefaultTransport.(*http.Transport)
+	httpTransport := &http.Transport{}
+	if transport != nil {
+		httpTransport = transport.Clone()
+	}
+	if !cfg.VerifySSL {
+		if httpTransport.TLSClientConfig == nil {
+			httpTransport.TLSClientConfig = &tls.Config{}
+		}
+		httpTransport.TLSClientConfig.InsecureSkipVerify = true
+	}
 
 	var auth *basicAuth
 	effectiveEmail := cfg.Email
@@ -117,7 +129,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		timeout:     cfg.Timeout,
 		retryConfig: cfg.RetryConfig,
 		debug:       cfg.Debug,
-		httpClient:  &http.Client{Timeout: cfg.Timeout},
+		httpClient:  &http.Client{Timeout: cfg.Timeout, Transport: httpTransport},
 		headers:     headers,
 		auth:        auth,
 	}, nil
@@ -253,6 +265,7 @@ func (c *Client) requestWithURL(method, requestURL string, body []byte, params u
 	cfg := c.retryConfig
 	if method != "GET" && method != "HEAD" {
 		cfg.RetryExceptions = false
+		cfg.RetryStatuses = map[int]bool{}
 	}
 
 	requestFn := func() (*http.Response, error) {
@@ -266,7 +279,7 @@ func (c *Client) requestWithURL(method, requestURL string, body []byte, params u
 			timeout := c.timeout.Seconds()
 			return nil, &cerrors.CojiraError{
 				Code:     cerrors.Timeout,
-				Message:  fmt.Sprintf("Request timed out: %s %s", method, path(requestURL)),
+				Message:  fmt.Sprintf("Request timed out: %s %s", method, requestPath(requestURL)),
 				Hint:     cerrors.HintTimeout(&timeout),
 				ExitCode: 1,
 			}
@@ -281,7 +294,7 @@ func (c *Client) requestWithURL(method, requestURL string, body []byte, params u
 	return c.handleResponse(resp, method, requestURL)
 }
 
-func path(requestURL string) string {
+func requestPath(requestURL string) string {
 	u, err := url.Parse(requestURL)
 	if err != nil {
 		return requestURL
@@ -412,6 +425,26 @@ func (c *Client) CreateIssue(payload map[string]any) (map[string]any, error) {
 	return decodeJSON(resp)
 }
 
+// DeleteIssue deletes a Jira issue.
+func (c *Client) DeleteIssue(issue string) error {
+	resp, err := c.Request("DELETE", "/issue/"+issue, nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// GetProject fetches Jira project metadata by key.
+func (c *Client) GetProject(projectKey string) (map[string]any, error) {
+	resp, err := c.Request("GET", "/project/"+projectKey, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
 // ListFields returns all available Jira fields.
 func (c *Client) ListFields() ([]map[string]any, error) {
 	resp, err := c.Request("GET", "/field", nil, nil)
@@ -438,6 +471,14 @@ func (c *Client) GetMyself() (map[string]any, error) {
 
 func decodeJSON(resp *http.Response) (map[string]any, error) {
 	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func decodeAnyJSON(resp *http.Response) (any, error) {
+	var result any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}

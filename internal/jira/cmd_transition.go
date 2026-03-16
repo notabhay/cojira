@@ -231,7 +231,13 @@ func runTransition(cmd *cobra.Command, args []string) error {
 	}
 
 	if idemKey != "" {
-		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.transition %s", issueID))
+		if recErr := idempotency.Record(idemKey, fmt.Sprintf("jira.transition %s", issueID)); recErr != nil {
+			warnMsg := fmt.Sprintf("Transition succeeded, but the idempotency key could not be saved: %v", recErr)
+			warnings = append(warnings, warnMsg)
+			if mode != "json" && mode != "summary" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
+			}
+		}
 	}
 
 	issue2, err := client.GetIssue(issueID, "status", "")

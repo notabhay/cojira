@@ -13,16 +13,17 @@ import (
 	"github.com/notabhay/cojira/internal/jira"
 	"github.com/notabhay/cojira/internal/meta"
 	"github.com/notabhay/cojira/internal/version"
+	"github.com/spf13/cobra"
 )
 
-func main() {
+func buildRootCmd() *cobra.Command {
 	dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
 
 	rootCmd := cli.NewRootCmd(version.Version)
 
 	// Build jira command and attach board subcommands.
 	jiraCmd := jira.NewJiraCmd()
-	board.RegisterBoardCommands(jiraCmd, nil)
+	board.RegisterBoardCommands(jiraCmd, jira.ClientFromCmd)
 
 	// Register all top-level commands.
 	rootCmd.AddCommand(confluence.NewConfluenceCmd())
@@ -33,7 +34,11 @@ func main() {
 	rootCmd.AddCommand(meta.NewDoctorCmd())
 	rootCmd.AddCommand(meta.NewInitCmd())
 	rootCmd.AddCommand(meta.NewPlanCmd(rootCmd))
+	return rootCmd
+}
 
+func main() {
+	rootCmd := buildRootCmd()
 	if err := cli.Execute(rootCmd); err != nil {
 		code := 1
 

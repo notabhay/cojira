@@ -2,9 +2,12 @@ package meta
 
 import (
 	"encoding/json"
+	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/notabhay/cojira/internal/dotenv"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +18,7 @@ func testRootCmd() *cobra.Command {
 
 	// Add stub jira subcommand with sample sub-subcommands.
 	jiraCmd := &cobra.Command{Use: "jira", Short: "Jira operations"}
-	for _, name := range []string{"info", "get", "update", "create", "transition",
+	for _, name := range []string{"info", "get", "raw", "delete", "update", "create", "transition",
 		"transitions", "search", "board-issues", "fields", "whoami", "validate",
 		"batch", "bulk-update", "bulk-transition", "bulk-update-summaries",
 		"sync", "sync-from-dir"} {
@@ -26,7 +29,7 @@ func testRootCmd() *cobra.Command {
 
 	// Add stub confluence subcommand.
 	confCmd := &cobra.Command{Use: "confluence", Short: "Confluence operations"}
-	for _, name := range []string{"info", "get", "update", "create", "rename",
+	for _, name := range []string{"info", "get", "view", "raw", "comments", "update", "create", "rename",
 		"move", "tree", "find", "copy-tree", "archive", "validate", "batch"} {
 		sub := &cobra.Command{Use: name, Short: name + " command"}
 		confCmd.AddCommand(sub)
@@ -126,6 +129,14 @@ func TestAgentPromptIncludesAllCommands(t *testing.T) {
 	}
 }
 
+func TestAgentPromptNoLongerListsConfluenceCommentsUnsupported(t *testing.T) {
+	root := testRootCmd()
+	manifest := buildManifest(root)
+	prompt := agentPrompt(manifest)
+	assert.NotContains(t, prompt, "Confluence: comments,")
+	assert.Contains(t, prompt, "Confluence comments:")
+}
+
 func TestDescribeJSONIsValidJSON(t *testing.T) {
 	root := testRootCmd()
 
@@ -143,13 +154,74 @@ func TestDescribeJSONIsValidJSON(t *testing.T) {
 
 	require.NoError(t, err)
 
-	buf := make([]byte, 65536)
-	n, _ := r.Read(buf)
-	require.Greater(t, n, 0)
+	buf, _ := io.ReadAll(r)
+	require.NotEmpty(t, buf)
 
 	var data map[string]any
-	require.NoError(t, json.Unmarshal(buf[:n], &data))
+	require.NoError(t, json.Unmarshal(buf, &data))
 	assert.Equal(t, true, data["ok"])
+}
+
+func TestDescribeJSONIncludesEnvLoadingAndSources(t *testing.T) {
+	dotenv.ResetTracking()
+	tmpDir := t.TempDir()
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(tmpDir))
+	defer func() { _ = os.Chdir(origDir) }()
+
+	envPath := filepath.Join(tmpDir, ".env")
+	require.NoError(t, os.WriteFile(envPath, []byte("CONFLUENCE_BASE_URL=https://conf.example\nCONFLUENCE_API_TOKEN=conf-token\n"), 0o644))
+	unsetEnvForLoadTest(t, "CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN")
+
+	root := testRootCmd()
+
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+
+	root.SetArgs([]string{"describe", "--output-mode", "json"})
+	err = root.Execute()
+
+	_ = w.Close()
+	os.Stdout = origStdout
+	require.NoError(t, err)
+
+	buf, _ := io.ReadAll(r)
+	require.NotEmpty(t, buf)
+
+	var data map[string]any
+	require.NoError(t, json.Unmarshal(buf, &data))
+	result := data["result"].(map[string]any)
+	envLoading := result["env_loading"].(map[string]any)
+	envSources := result["env_sources"].(map[string]any)
+	assert.Equal(t, canonicalPathForTest(envPath), canonicalPathForTest(envLoading["loaded_path"].(string)))
+	confToken := envSources["CONFLUENCE_API_TOKEN"].(map[string]any)
+	assert.Equal(t, canonicalPathForTest(envPath), canonicalPathForTest(confToken["source"].(string)))
+}
+
+func unsetEnvForLoadTest(t *testing.T, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		value, had := os.LookupEnv(key)
+		require.NoError(t, os.Unsetenv(key))
+		t.Cleanup(func() {
+			if had {
+				_ = os.Setenv(key, value)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
+	}
+}
+
+func canonicalPathForTest(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil && resolved != "" {
+		return resolved
+	}
+	return filepath.Clean(path)
 }
 
 func TestConfiguredToolsFromEnv(t *testing.T) {
@@ -171,4 +243,20 @@ func TestConfiguredToolsFromEnv(t *testing.T) {
 	t.Setenv("CONFLUENCE_API_TOKEN", "token")
 	tools = configuredToolsFromEnv()
 	assert.Equal(t, []string{"confluence", "jira"}, tools)
+}
+
+func TestBuildFlagSpecsIncludesInheritedFlags(t *testing.T) {
+	parent := &cobra.Command{Use: "parent"}
+	parent.PersistentFlags().String("shared", "x", "shared flag")
+	child := &cobra.Command{Use: "child"}
+	child.Flags().String("local", "y", "local flag")
+	parent.AddCommand(child)
+
+	specs := buildFlagSpecs(child)
+	names := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		names = append(names, spec["dest"].(string))
+	}
+	assert.Contains(t, names, "shared")
+	assert.Contains(t, names, "local")
 }

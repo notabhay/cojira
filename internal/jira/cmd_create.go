@@ -2,8 +2,11 @@ package jira
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"github.com/notabhay/cojira/internal/cli"
+	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/idempotency"
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
@@ -38,6 +41,20 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	payload, err := readJSONFile(file)
 	if err != nil {
+		absFile, _ := filepath.Abs(file)
+		cwd, _ := os.Getwd()
+		if mode == "json" {
+			code := cerrors.FileNotFound
+			if ce, ok := err.(*cerrors.CojiraError); ok && ce.Code != "" {
+				code = ce.Code
+			}
+			errObj, _ := output.ErrorObj(code, err.Error(), "", "", nil)
+			return output.PrintJSON(output.BuildEnvelope(
+				false, "jira", "create",
+				map[string]any{"file": file, "absolute_file": absFile, "cwd": cwd},
+				nil, nil, []any{errObj}, "", "", "", nil,
+			))
+		}
 		return err
 	}
 
@@ -102,8 +119,15 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	var warnings []any
 	if idemKey != "" {
-		_ = idempotency.Record(idemKey, "jira.create")
+		if recErr := idempotency.Record(idemKey, "jira.create"); recErr != nil {
+			warnMsg := fmt.Sprintf("Issue was created, but the idempotency key could not be saved: %v", recErr)
+			warnings = append(warnings, warnMsg)
+			if mode != "json" && mode != "summary" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
+			}
+		}
 	}
 
 	key, _ := result["key"].(string)
@@ -122,10 +146,11 @@ func runCreate(cmd *cobra.Command, args []string) error {
 				"key":         key,
 				"id":          issueID,
 				"url":         issueURL,
+				"file":        file,
 				"receipt":     receipt.Format(),
 				"idempotency": map[string]any{"key": output.IdempotencyKey("jira.create", payload)},
 			},
-			nil, nil, "", "", "", nil,
+			warnings, nil, "", "", "", nil,
 		))
 	}
 	if mode == "summary" {

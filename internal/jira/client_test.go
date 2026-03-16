@@ -74,6 +74,19 @@ func TestNewClientBasicAuth(t *testing.T) {
 	assert.Equal(t, "my-token", c.auth.password)
 }
 
+func TestNewClientVerifySSLFalseSetsInsecureTransport(t *testing.T) {
+	c, err := NewClient(ClientConfig{
+		BaseURL:   "https://jira.example.com",
+		Token:     "tok",
+		VerifySSL: false,
+	})
+	require.NoError(t, err)
+	transport, ok := c.httpClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotNil(t, transport.TLSClientConfig)
+	assert.True(t, transport.TLSClientConfig.InsecureSkipVerify)
+}
+
 func TestNewClientPlaceholderEmailFallsBackToBearer(t *testing.T) {
 	c, err := NewClient(ClientConfig{
 		BaseURL: "https://jira.example.com",
@@ -241,6 +254,62 @@ func TestCreateIssue(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "PROJ-999", result["key"])
+}
+
+func TestDeleteIssue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeleteIssue("PROJ-123"))
+}
+
+func TestUpdateIssueDoesNotRetryRetryableStatuses(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(503)
+		_, _ = w.Write([]byte(`{"message":"retry later"}`))
+	}))
+	defer server.Close()
+
+	c, err := NewClient(ClientConfig{
+		BaseURL: server.URL,
+		Token:   "fake-token",
+		Timeout: 5 * time.Second,
+		RetryConfig: httpclient.RetryConfig{
+			Retries:       3,
+			RetryStatuses: map[int]bool{503: true},
+			Sleep:         func(time.Duration) {},
+		},
+	})
+	require.NoError(t, err)
+
+	err = c.UpdateIssue("PROJ-123", map[string]any{"fields": map[string]any{"summary": "New"}}, true)
+	require.Error(t, err)
+	assert.Equal(t, 1, callCount)
+}
+
+func TestGetProject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/project/PROJ", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"key": "PROJ",
+			"components": []map[string]any{
+				{"id": "100", "name": "[Analytics]"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	project, err := c.GetProject("PROJ")
+	require.NoError(t, err)
+	assert.Equal(t, "PROJ", project["key"])
 }
 
 func TestListTransitions(t *testing.T) {

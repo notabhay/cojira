@@ -133,7 +133,9 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	var items []map[string]any
 	successCount := 0
 	failureCount := 0
+	skippedCount := 0
 	var failures []failureEntry
+	var warningObjs []any
 
 	if mode != "json" && !quiet && mode != "summary" {
 		fmt.Printf("Batch mode: %d operation(s)\n", len(operations))
@@ -148,6 +150,21 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		opType, _ := op["op"].(string)
 		desc := ""
 		item := map[string]any{"op": opType, "ok": false}
+		opKey := ""
+		if idemKey != "" && !dryRun {
+			opKey = fmt.Sprintf("%s.op.%04d", idemKey, idx)
+			if idempotency.IsDuplicate(opKey) {
+				item["ok"] = true
+				item["skipped"] = true
+				item["reason"] = "idempotency_checkpoint_already_used"
+				r := output.Receipt{OK: true, Message: fmt.Sprintf("Skipped %s (already completed in a prior batch attempt)", stringOr(desc, opType))}
+				item["receipt"] = r.Format()
+				items = append(items, item)
+				skippedCount++
+				output.EmitProgress(mode, quiet, idx+1, len(operations), stringOr(desc, opType), "SKIPPED")
+				continue
+			}
+		}
 
 		var opErr error
 		switch opType {
@@ -257,6 +274,16 @@ func runBatch(cmd *cobra.Command, args []string) error {
 			if mode != "json" && !quiet && mode != "summary" {
 				fmt.Println(r.Format())
 			}
+			if opKey != "" {
+				if recErr := idempotency.Record(opKey, desc); recErr != nil {
+					warnMsg := fmt.Sprintf("%s: operation succeeded, but the idempotency checkpoint could not be saved: %v", desc, recErr)
+					item["idempotency_warning"] = warnMsg
+					warningObjs = append(warningObjs, warnMsg)
+					if mode != "json" && !quiet && mode != "summary" {
+						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
+					}
+				}
+			}
 			successCount++
 		}
 
@@ -276,6 +303,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		"total":   len(operations),
 		"ok":      successCount,
 		"failed":  failureCount,
+		"skipped": skippedCount,
 		"dry_run": dryRun,
 	}
 
@@ -284,7 +312,13 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		if src == "" {
 			src = "stdin"
 		}
-		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.batch %s", src))
+		if recErr := idempotency.Record(idemKey, fmt.Sprintf("jira.batch %s", src)); recErr != nil {
+			warnMsg := fmt.Sprintf("Batch completed, but the idempotency completion marker could not be saved: %v", recErr)
+			warningObjs = append(warningObjs, warnMsg)
+			if mode != "json" && !quiet && mode != "summary" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
+			}
+		}
 	}
 
 	if mode == "json" {
@@ -302,7 +336,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		return output.PrintJSON(output.BuildEnvelope(
 			failureCount == 0, "jira", "batch", target,
 			map[string]any{"items": items, "summary": summary, "request_id": reqID},
-			nil, errs, "", "", "", nil,
+			warningObjs, errs, "", "", "", nil,
 		))
 	}
 

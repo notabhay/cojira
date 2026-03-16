@@ -1,6 +1,8 @@
 package jira
 
 import (
+	"os"
+
 	"github.com/notabhay/cojira/internal/cli"
 	"github.com/spf13/cobra"
 )
@@ -11,10 +13,11 @@ func NewJiraCmd() *cobra.Command {
 		Use:   "jira",
 		Short: "Jira CLI for creating, updating, and syncing issues",
 		Long: "cojira jira: a general-purpose Jira CLI for creating, updating, and syncing issues.\n" +
-			"Use --base-url or JIRA_BASE_URL unless the command includes an issue URL that can be inferred.",
+			"Use --base-url or JIRA_BASE_URL to point at your Jira instance.",
 	}
 
 	// Persistent flags available to all subcommands.
+	cmd.PersistentFlags().String("base-url", os.Getenv("JIRA_BASE_URL"), "Jira base URL (overrides JIRA_BASE_URL)")
 	cmd.PersistentFlags().Bool("experimental", false, "Enable experimental commands (may use unsupported/internal Jira APIs)")
 	cli.AddHTTPRetryFlags(cmd)
 
@@ -22,6 +25,8 @@ func NewJiraCmd() *cobra.Command {
 	cmd.AddCommand(
 		NewInfoCmd(),
 		NewGetCmd(),
+		NewRawCmd(),
+		NewDeleteCmd(),
 		NewUpdateCmd(),
 		NewTransitionCmd(),
 		NewTransitionsCmd(),

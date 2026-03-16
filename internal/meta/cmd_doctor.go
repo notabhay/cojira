@@ -44,7 +44,7 @@ func NewDoctorCmd() *cobra.Command {
 }
 
 func runDoctor(cmd *cobra.Command, _ []string) error {
-	dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
+	loadResult := dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
 	cli.NormalizeOutputMode(cmd)
 	jsonOut := cli.IsJSON(cmd)
 
@@ -120,7 +120,12 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 				warns = append(warns, *r.Warning)
 			}
 		}
-		result := map[string]any{"checks": checksOut, "fix": fixResult}
+		result := map[string]any{
+			"checks":      checksOut,
+			"fix":         fixResult,
+			"env_loading": loadResult,
+			"env_sources": envSourcesReport(),
+		}
 		env := output.BuildEnvelope(
 			ok, "cojira", "doctor",
 			map[string]any{}, result,
@@ -140,6 +145,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			if u, ok := r.Details["user"].(map[string]any); ok {
 				user, _ = u["displayName"].(string)
 			}
+			source, _ := r.Details["credential_source"].(string)
 			msg := r.Name + ": OK"
 			var extras []string
 			if baseURL != "" {
@@ -147,6 +153,9 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			}
 			if user != "" {
 				extras = append(extras, "user="+user)
+			}
+			if source != "" {
+				extras = append(extras, "source="+source)
 			}
 			if len(extras) > 0 {
 				msg += " (" + strings.Join(extras, ", ") + ")"
@@ -222,12 +231,18 @@ func runFix(jsonOut bool) map[string]any {
 	}
 
 	values := promptMissingEnv(missing)
-	written := appendEnvValues(envPath, values, existing)
+	written, writeErr := appendEnvValues(envPath, values, existing)
 
 	for _, key := range written {
 		_ = os.Setenv(key, values[key])
 	}
 
+	if writeErr != nil {
+		if !jsonOut {
+			fmt.Fprintf(os.Stderr, "Could not write credentials file %s: %v\n", envPath, writeErr)
+		}
+		return map[string]any{"requested": missing, "written": written, "path": envPath, "error": writeErr.Error()}
+	}
 	if len(written) > 0 && !jsonOut {
 		fmt.Printf("Wrote %d value(s) to %s\n", len(written), envPath)
 	} else if !jsonOut {
@@ -267,7 +282,7 @@ var promptMissingEnv = func(missing []string) map[string]string {
 }
 
 // appendEnvValues appends key=value pairs to the .env file for keys not already present.
-func appendEnvValues(path string, values map[string]string, existing map[string]string) []string {
+func appendEnvValues(path string, values map[string]string, existing map[string]string) ([]string, error) {
 	var toAdd []string
 	for k, v := range values {
 		if _, exists := existing[k]; !exists && v != "" {
@@ -275,7 +290,7 @@ func appendEnvValues(path string, values map[string]string, existing map[string]
 		}
 	}
 	if len(toAdd) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var existingContent string
@@ -283,24 +298,28 @@ func appendEnvValues(path string, values map[string]string, existing map[string]
 		existingContent = string(data)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer func() { _ = f.Close() }()
 
 	if existingContent != "" && !strings.HasSuffix(existingContent, "\n") {
-		_, _ = f.WriteString("\n")
+		if _, err := f.WriteString("\n"); err != nil {
+			return nil, err
+		}
 	}
 	for _, key := range toAdd {
 		escaped := strings.ReplaceAll(values[key], `\`, `\\`)
 		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-		_, _ = fmt.Fprintf(f, "%s=\"%s\"\n", key, escaped)
+		if _, err := fmt.Fprintf(f, "%s=\"%s\"\n", key, escaped); err != nil {
+			return nil, err
+		}
 	}
-	return toAdd
+	return toAdd, nil
 }
 
 // runDoctorChecks runs connectivity checks for Jira and Confluence.
@@ -354,10 +373,13 @@ func checkJira(rc cli.RetryConfig) CheckResult {
 			fmt.Sprintf("Missing required env var(s): %s", strings.Join(missing, ", ")),
 			cerrors.HintSetup(), "", nil)
 		return CheckResult{
-			OK:      false,
-			Name:    "jira",
-			Details: map[string]any{"configured": false, "missing_env": missing},
-			Error:   errObj,
+			OK:   false,
+			Name: "jira",
+			Details: mergeDetails(
+				map[string]any{"configured": false, "missing_env": missing},
+				toolCredentialDetails("JIRA_BASE_URL", "JIRA_API_TOKEN"),
+			),
+			Error: errObj,
 		}
 	}
 
@@ -386,10 +408,13 @@ func checkJira(rc cli.RetryConfig) CheckResult {
 		errObj, _ := output.ErrorObj(cerrors.ConfigInvalid, err.Error(),
 			cerrors.HintSetup(), "", nil)
 		return CheckResult{
-			OK:      false,
-			Name:    "jira",
-			Details: map[string]any{"configured": true, "base_url": baseURL},
-			Error:   errObj,
+			OK:   false,
+			Name: "jira",
+			Details: mergeDetails(
+				map[string]any{"configured": true, "base_url": baseURL},
+				toolCredentialDetails("JIRA_BASE_URL", "JIRA_API_TOKEN"),
+			),
+			Error: errObj,
 		}
 	}
 
@@ -406,16 +431,19 @@ func checkJira(rc cli.RetryConfig) CheckResult {
 	return CheckResult{
 		OK:   true,
 		Name: "jira",
-		Details: map[string]any{
-			"configured": true,
-			"base_url":   baseURL,
-			"user": map[string]any{
-				"displayName":  me["displayName"],
-				"accountId":    me["accountId"],
-				"emailAddress": me["emailAddress"],
+		Details: mergeDetails(
+			map[string]any{
+				"configured": true,
+				"base_url":   baseURL,
+				"user": map[string]any{
+					"displayName":  me["displayName"],
+					"accountId":    me["accountId"],
+					"emailAddress": me["emailAddress"],
+				},
+				"field_count": len(fields),
 			},
-			"field_count": len(fields),
-		},
+			toolCredentialDetails("JIRA_BASE_URL", "JIRA_API_TOKEN"),
+		),
 	}
 }
 
@@ -438,10 +466,13 @@ func jiraErrorResult(err error, baseURL string) CheckResult {
 	}
 	errObj, _ := output.ErrorObj(code, msg, hint, "", nil)
 	return CheckResult{
-		OK:      false,
-		Name:    "jira",
-		Details: map[string]any{"configured": true, "base_url": baseURL},
-		Error:   errObj,
+		OK:   false,
+		Name: "jira",
+		Details: mergeDetails(
+			map[string]any{"configured": true, "base_url": baseURL},
+			toolCredentialDetails("JIRA_BASE_URL", "JIRA_API_TOKEN"),
+		),
+		Error: errObj,
 	}
 }
 
@@ -461,10 +492,13 @@ func checkConfluence(rc cli.RetryConfig) CheckResult {
 			fmt.Sprintf("Missing required env var(s): %s", strings.Join(missing, ", ")),
 			cerrors.HintSetup(), "", nil)
 		return CheckResult{
-			OK:      false,
-			Name:    "confluence",
-			Details: map[string]any{"configured": false, "missing_env": missing},
-			Error:   errObj,
+			OK:   false,
+			Name: "confluence",
+			Details: mergeDetails(
+				map[string]any{"configured": false, "missing_env": missing},
+				toolCredentialDetails("CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN"),
+			),
+			Error: errObj,
 		}
 	}
 
@@ -488,10 +522,13 @@ func checkConfluence(rc cli.RetryConfig) CheckResult {
 		errObj, _ := output.ErrorObj(cerrors.ConfigInvalid, err.Error(),
 			cerrors.HintSetup(), "", nil)
 		return CheckResult{
-			OK:      false,
-			Name:    "confluence",
-			Details: map[string]any{"configured": true, "base_url": baseURL},
-			Error:   errObj,
+			OK:   false,
+			Name: "confluence",
+			Details: mergeDetails(
+				map[string]any{"configured": true, "base_url": baseURL},
+				toolCredentialDetails("CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN"),
+			),
+			Error: errObj,
 		}
 	}
 
@@ -513,15 +550,18 @@ func checkConfluence(rc cli.RetryConfig) CheckResult {
 	return CheckResult{
 		OK:   true,
 		Name: "confluence",
-		Details: map[string]any{
-			"configured": true,
-			"base_url":   baseURL,
-			"user": map[string]any{
-				"displayName": me["displayName"],
-				"accountId":   me["accountId"],
+		Details: mergeDetails(
+			map[string]any{
+				"configured": true,
+				"base_url":   baseURL,
+				"user": map[string]any{
+					"displayName": me["displayName"],
+					"accountId":   me["accountId"],
+				},
+				"space_sample_count": spaceSampleCount,
 			},
-			"space_sample_count": spaceSampleCount,
-		},
+			toolCredentialDetails("CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN"),
+		),
 	}
 }
 
@@ -529,6 +569,10 @@ func confluenceErrorResult(err error, baseURL string) CheckResult {
 	msg := err.Error()
 	code := cerrors.HTTPError
 	hint := ""
+	if strings.Contains(msg, "404") {
+		code = cerrors.HTTP404
+		hint = cerrors.HintBaseURL()
+	}
 	if strings.Contains(msg, "401") || strings.Contains(msg, "403") {
 		hint = cerrors.HintPermission()
 	}
@@ -538,11 +582,61 @@ func confluenceErrorResult(err error, baseURL string) CheckResult {
 	}
 	errObj, _ := output.ErrorObj(code, msg, hint, "", nil)
 	return CheckResult{
-		OK:      false,
-		Name:    "confluence",
-		Details: map[string]any{"configured": true, "base_url": baseURL},
-		Error:   errObj,
+		OK:   false,
+		Name: "confluence",
+		Details: mergeDetails(
+			map[string]any{"configured": true, "base_url": baseURL},
+			toolCredentialDetails("CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN"),
+		),
+		Error: errObj,
 	}
+}
+
+func envSourcesReport() map[string]map[string]any {
+	return dotenv.Provenance([]string{
+		"CONFLUENCE_BASE_URL",
+		"CONFLUENCE_API_TOKEN",
+		"JIRA_BASE_URL",
+		"JIRA_API_TOKEN",
+		"JIRA_EMAIL",
+	})
+}
+
+func toolCredentialDetails(keys ...string) map[string]any {
+	return map[string]any{
+		"credential_source":  credentialSourceSummary(keys...),
+		"credential_sources": dotenv.Provenance(keys),
+	}
+}
+
+func credentialSourceSummary(keys ...string) string {
+	sources := map[string]bool{}
+	for _, key := range keys {
+		source := dotenv.SourceForKey(key)
+		if source == "" {
+			continue
+		}
+		sources[source] = true
+	}
+	switch len(sources) {
+	case 0:
+		return ""
+	case 1:
+		for source := range sources {
+			return source
+		}
+	}
+	return "mixed"
+}
+
+func mergeDetails(parts ...map[string]any) map[string]any {
+	merged := map[string]any{}
+	for _, part := range parts {
+		for key, value := range part {
+			merged[key] = value
+		}
+	}
+	return merged
 }
 
 // isTimeoutError checks if an error is a timeout.

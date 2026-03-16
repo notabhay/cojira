@@ -35,6 +35,7 @@ NO_EQUALS_LINE
 }
 
 func TestLoadIfPresent(t *testing.T) {
+	ResetTracking()
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, ".env")
 	err := os.WriteFile(envFile, []byte("COJIRA_TEST_VAR=hello\n"), 0644)
@@ -45,11 +46,13 @@ func TestLoadIfPresent(t *testing.T) {
 	_ = os.Unsetenv("COJIRA_TEST_VAR")
 
 	loaded := LoadIfPresent([]string{envFile})
-	assert.Equal(t, envFile, loaded)
+	assert.Equal(t, envFile, loaded.LoadedPath)
 	assert.Equal(t, "hello", os.Getenv("COJIRA_TEST_VAR"))
+	assert.Equal(t, envFile, SourceForKey("COJIRA_TEST_VAR"))
 }
 
 func TestLoadIfPresentDoesNotOverwrite(t *testing.T) {
+	ResetTracking()
 	dir := t.TempDir()
 	envFile := filepath.Join(dir, ".env")
 	err := os.WriteFile(envFile, []byte("COJIRA_EXISTING=new\n"), 0644)
@@ -58,28 +61,54 @@ func TestLoadIfPresentDoesNotOverwrite(t *testing.T) {
 	t.Setenv("COJIRA_EXISTING", "original")
 
 	loaded := LoadIfPresent([]string{envFile})
-	assert.Equal(t, envFile, loaded)
+	assert.Equal(t, envFile, loaded.LoadedPath)
 	assert.Equal(t, "original", os.Getenv("COJIRA_EXISTING"))
+	assert.Equal(t, SourceEnvironment, SourceForKey("COJIRA_EXISTING"))
 }
 
 func TestLoadIfPresentNoFile(t *testing.T) {
+	ResetTracking()
 	loaded := LoadIfPresent([]string{"/nonexistent/.env"})
-	assert.Empty(t, loaded)
+	assert.Empty(t, loaded.LoadedPath)
 }
 
-func TestLoadIfPresentFirstFileWins(t *testing.T) {
+func TestLoadIfPresentMergesFilesWithEarlierPrecedence(t *testing.T) {
+	ResetTracking()
 	dir := t.TempDir()
 	env1 := filepath.Join(dir, "a.env")
 	env2 := filepath.Join(dir, "b.env")
-	require.NoError(t, os.WriteFile(env1, []byte("COJIRA_FIRST=a\n"), 0644))
-	require.NoError(t, os.WriteFile(env2, []byte("COJIRA_FIRST=b\n"), 0644))
+	require.NoError(t, os.WriteFile(env1, []byte("COJIRA_FIRST=a\n"), 0o644))
+	require.NoError(t, os.WriteFile(env2, []byte("COJIRA_FIRST=b\nCOJIRA_SECOND=c\n"), 0o644))
 
 	t.Setenv("COJIRA_FIRST", "")
 	_ = os.Unsetenv("COJIRA_FIRST")
+	t.Setenv("COJIRA_SECOND", "")
+	_ = os.Unsetenv("COJIRA_SECOND")
 
 	loaded := LoadIfPresent([]string{env1, env2})
-	assert.Equal(t, env1, loaded)
+	assert.Equal(t, env1, loaded.LoadedPath)
+	assert.Equal(t, []string{env1, env2}, loaded.LoadedPaths)
 	assert.Equal(t, "a", os.Getenv("COJIRA_FIRST"))
+	assert.Equal(t, "c", os.Getenv("COJIRA_SECOND"))
+}
+
+func TestProvenanceTracksLoadedAndEnvironmentSources(t *testing.T) {
+	ResetTracking()
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	require.NoError(t, os.WriteFile(envFile, []byte("COJIRA_FILE=file-value\nCOJIRA_EXISTING=file-ignored\n"), 0o644))
+
+	t.Setenv("COJIRA_EXISTING", "shell-value")
+	loaded := LoadIfPresent([]string{envFile})
+
+	assert.Equal(t, envFile, loaded.LoadedPath)
+	report := Provenance([]string{"COJIRA_FILE", "COJIRA_EXISTING", "COJIRA_MISSING"})
+	assert.Equal(t, envFile, report["COJIRA_FILE"]["source"])
+	assert.Equal(t, true, report["COJIRA_FILE"]["present"])
+	assert.Equal(t, SourceEnvironment, report["COJIRA_EXISTING"]["source"])
+	assert.Equal(t, true, report["COJIRA_EXISTING"]["present"])
+	assert.Equal(t, "", report["COJIRA_MISSING"]["source"])
+	assert.Equal(t, false, report["COJIRA_MISSING"]["present"])
 }
 
 func TestDefaultSearchPaths(t *testing.T) {

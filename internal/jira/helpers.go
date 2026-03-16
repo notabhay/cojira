@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	cerrors "github.com/notabhay/cojira/internal/errors"
@@ -96,6 +97,7 @@ type fieldDiff struct {
 	Field    string `json:"field"`
 	OldValue any    `json:"from"`
 	NewValue any    `json:"to"`
+	Unified  string `json:"unified_diff,omitempty"`
 }
 
 func diffFields(currentFields, newFields map[string]any) []fieldDiff {
@@ -109,6 +111,7 @@ func diffFields(currentFields, newFields map[string]any) []fieldDiff {
 				Field:    field,
 				OldValue: oldValue,
 				NewValue: newValue,
+				Unified:  computeFieldUnifiedDiff(field, oldValue, newValue),
 			})
 		}
 	}
@@ -138,10 +141,72 @@ func previewPayloadDiff(issueID string, issue, payload map[string]any, quiet boo
 	if !quiet {
 		fmt.Printf("%s:\n", issueID)
 		for _, d := range diffs {
+			if d.Unified != "" {
+				fmt.Printf("  %s:\n%s\n", d.Field, d.Unified)
+				continue
+			}
 			fmt.Printf("  %s: %s -> %s\n", d.Field, formatValue(d.OldValue, 240), formatValue(d.NewValue, 240))
 		}
 	}
 	return diffs
+}
+
+func computeFieldUnifiedDiff(field string, oldValue, newValue any) string {
+	oldText, oldOK := diffRenderableValue(oldValue)
+	newText, newOK := diffRenderableValue(newValue)
+	if !oldOK || !newOK {
+		return ""
+	}
+	if oldText == newText {
+		return ""
+	}
+	if !strings.Contains(oldText, "\n") && !strings.Contains(newText, "\n") && len(oldText) < 120 && len(newText) < 120 {
+		return ""
+	}
+	return computeUnifiedDiff(oldText, newText, field)
+}
+
+func diffRenderableValue(value any) (string, bool) {
+	switch v := value.(type) {
+	case nil:
+		return "null", true
+	case string:
+		return v, true
+	case map[string]any, []any:
+		b, err := json.MarshalIndent(v, "", "  ")
+		if err != nil {
+			return "", false
+		}
+		return string(b), true
+	default:
+		return fmt.Sprintf("%v", v), true
+	}
+}
+
+func computeUnifiedDiff(oldText, newText, label string) string {
+	oldLines := strings.Split(oldText, "\n")
+	newLines := strings.Split(newText, "\n")
+	var diffLines []string
+	diffLines = append(diffLines, fmt.Sprintf("--- %s.current", label))
+	diffLines = append(diffLines, fmt.Sprintf("+++ %s.new", label))
+
+	i, j := 0, 0
+	for i < len(oldLines) || j < len(newLines) {
+		switch {
+		case i < len(oldLines) && j < len(newLines) && oldLines[i] == newLines[j]:
+			diffLines = append(diffLines, " "+oldLines[i])
+			i++
+			j++
+		case i < len(oldLines):
+			diffLines = append(diffLines, "-"+oldLines[i])
+			i++
+		case j < len(newLines):
+			diffLines = append(diffLines, "+"+newLines[j])
+			j++
+		}
+	}
+
+	return strings.Join(diffLines, "\n")
 }
 
 // formatFieldList formats a list of field names for display.
@@ -265,6 +330,69 @@ func extractNames(m map[string]any, key string) []string {
 		}
 	}
 	return result
+}
+
+func extractUnifiedDiffs(diffs []fieldDiff) map[string]string {
+	out := map[string]string{}
+	for _, diff := range diffs {
+		if diff.Unified != "" {
+			out[diff.Field] = diff.Unified
+		}
+	}
+	return out
+}
+
+func resolveProjectComponentsByName(client *Client, projectKey string, names []string) ([]map[string]any, error) {
+	project, err := client.GetProject(projectKey)
+	if err != nil {
+		return nil, err
+	}
+	components, _ := project["components"].([]any)
+	if len(components) == 0 {
+		return nil, &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  fmt.Sprintf("Project %s has no components to resolve.", projectKey),
+			ExitCode: 1,
+		}
+	}
+
+	byName := map[string]map[string]any{}
+	availableNames := make([]string, 0, len(components))
+	for _, item := range components {
+		component, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := strings.TrimSpace(fmt.Sprintf("%v", component["name"]))
+		if name == "" {
+			continue
+		}
+		availableNames = append(availableNames, name)
+		byName[strings.ToLower(name)] = component
+	}
+
+	var resolved []map[string]any
+	for _, requested := range names {
+		key := strings.ToLower(strings.TrimSpace(requested))
+		component, ok := byName[key]
+		if !ok {
+			sort.Strings(availableNames)
+			return nil, &cerrors.CojiraError{
+				Code:     cerrors.OpFailed,
+				Message:  fmt.Sprintf("Component %q was not found in project %s. Available components: %s", requested, projectKey, strings.Join(availableNames, ", ")),
+				ExitCode: 1,
+			}
+		}
+		entry := map[string]any{}
+		if id := component["id"]; id != nil {
+			entry["id"] = id
+		} else {
+			entry["name"] = component["name"]
+		}
+		resolved = append(resolved, entry)
+	}
+
+	return resolved, nil
 }
 
 var normTitleRe = regexp.MustCompile(`^\d+-`)

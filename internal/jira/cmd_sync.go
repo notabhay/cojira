@@ -90,7 +90,10 @@ func runSync(cmd *cobra.Command, _ []string) error {
 	}
 	jql := strings.Join(jqlParts, " AND ") + " ORDER BY created DESC"
 
-	outputDir := filepath.Join(baseDir, project)
+	outputDir, err := safeJoinUnder(baseDir, project)
+	if err != nil {
+		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: fmt.Sprintf("Unsafe sync output path: %v", err), ExitCode: 2}
+	}
 
 	// Collect all keys.
 	var allKeys []string
@@ -151,7 +154,12 @@ func runSync(cmd *cobra.Command, _ []string) error {
 	var failureDetails []failureEntry
 
 	for idx, key := range allKeys {
-		ticketDir := filepath.Join(outputDir, key)
+		ticketDir, err := safeJoinUnder(outputDir, key)
+		if err != nil {
+			failureCount++
+			failureDetails = append(failureDetails, failureEntry{key: key, err: err.Error()})
+			continue
+		}
 		if err := os.MkdirAll(ticketDir, 0o755); err != nil {
 			return err
 		}

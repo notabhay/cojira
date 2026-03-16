@@ -50,7 +50,7 @@ func IsDuplicate(key string) bool {
 // Record records a completed operation for the given key.
 func Record(key string, description string) error {
 	dir := storeDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	e := entry{
@@ -62,7 +62,7 @@ func Record(key string, description string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(storePath(key), data, 0o644)
+	return os.WriteFile(storePath(key), data, 0o600)
 }
 
 // CheckAndRecord returns true if this key is a duplicate (already recorded

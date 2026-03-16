@@ -3,8 +3,10 @@ package jira
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/notabhay/cojira/internal/cli"
 	cerrors "github.com/notabhay/cojira/internal/errors"
@@ -25,6 +27,8 @@ func NewUpdateCmd() *cobra.Command {
 	cmd.Flags().String("summary", "", "Quick summary update")
 	cmd.Flags().String("description", "", "Quick description update")
 	cmd.Flags().String("description-file", "", "Read description from a text file")
+	cmd.Flags().String("due", "", "Quick due date update (YYYY-MM-DD)")
+	cmd.Flags().StringArray("component", nil, "Set components by name (repeatable)")
 	cmd.Flags().StringArray("set", nil, "Shorthand field update (repeatable): field=value, field:=<json>, labels+=x, labels-=x")
 	cmd.Flags().Bool("no-notify", false, "Disable notifications")
 	cmd.Flags().Bool("dry-run", false, "Preview changes without applying")
@@ -53,6 +57,8 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	summaryFlag, _ := cmd.Flags().GetString("summary")
 	descFlag, _ := cmd.Flags().GetString("description")
 	descFile, _ := cmd.Flags().GetString("description-file")
+	dueFlag, _ := cmd.Flags().GetString("due")
+	componentFlags, _ := cmd.Flags().GetStringArray("component")
 	setExprs, _ := cmd.Flags().GetStringArray("set")
 	noNotify, _ := cmd.Flags().GetBool("no-notify")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
@@ -103,6 +109,23 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	if descFlag != "" {
 		fields["description"] = descFlag
 	}
+	if dueFlag != "" {
+		if _, err := time.Parse("2006-01-02", dueFlag); err != nil {
+			msg := "Invalid --due value. Use YYYY-MM-DD."
+			if mode == "json" {
+				errObj, _ := output.ErrorObj(cerrors.OpFailed, msg, "", "", nil)
+				ec := 2
+				return output.PrintJSON(output.BuildEnvelope(
+					false, "jira", "update",
+					map[string]any{"issue": issueID},
+					nil, nil, []any{errObj}, "", "", "", &ec,
+				))
+			}
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", msg)
+			return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: msg, ExitCode: 2}
+		}
+		fields["duedate"] = dueFlag
+	}
 
 	// Parse --set expressions.
 	type setOp struct {
@@ -124,6 +147,10 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	}
 	for _, s := range setOps {
 		refFields[s.field] = true
+	}
+	if len(componentFlags) > 0 {
+		refFields["project"] = true
+		refFields["components"] = true
 	}
 	if mode == "json" {
 		refFields["updated"] = true
@@ -167,9 +194,21 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if len(componentFlags) > 0 {
+		projectKey := safeString(currentFields, "project", "key")
+		if projectKey == "" {
+			return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "Could not determine the issue's project for component lookup.", ExitCode: 1}
+		}
+		resolvedComponents, err := resolveProjectComponentsByName(client, projectKey, componentFlags)
+		if err != nil {
+			return err
+		}
+		fields["components"] = resolvedComponents
+	}
+
 	payload["fields"] = fields
 
-	diffs := previewPayloadDiff(issueID, issueCurrent, payload, quiet || mode == "json")
+	diffs := previewPayloadDiff(issueID, issueCurrent, payload, quiet || mode == "json" || (!diffFlag && !previewFlag && !dryRun))
 	diffFieldNames := make([]string, 0, len(diffs))
 	for _, d := range diffs {
 		diffFieldNames = append(diffFieldNames, d.Field)
@@ -181,10 +220,11 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 				true, "jira", "update",
 				map[string]any{"issue": issueID},
 				map[string]any{
-					"preview":     true,
-					"diffs":       diffs,
-					"summary":     map[string]any{"field_count": len(diffs)},
-					"idempotency": map[string]any{"key": output.IdempotencyKey("jira.update", issueID, payload)},
+					"preview":       true,
+					"diffs":         diffs,
+					"unified_diffs": extractUnifiedDiffs(diffs),
+					"summary":       map[string]any{"field_count": len(diffs)},
+					"idempotency":   map[string]any{"key": output.IdempotencyKey("jira.update", issueID, payload)},
 				},
 				nil, nil, "", "", "", nil,
 			))
@@ -211,10 +251,11 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 				true, "jira", "update",
 				map[string]any{"issue": issueID},
 				map[string]any{
-					"dry_run":     true,
-					"diffs":       diffs,
-					"summary":     map[string]any{"field_count": len(diffs)},
-					"idempotency": map[string]any{"key": output.IdempotencyKey("jira.update", issueID, payload)},
+					"dry_run":       true,
+					"diffs":         diffs,
+					"unified_diffs": extractUnifiedDiffs(diffs),
+					"summary":       map[string]any{"field_count": len(diffs)},
+					"idempotency":   map[string]any{"key": output.IdempotencyKey("jira.update", issueID, payload)},
 				},
 				nil, nil, "", "", "", nil,
 			))
@@ -259,6 +300,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	var warnings []any
 	if idemKey != "" {
 		if idempotency.IsDuplicate(idemKey) {
 			if mode == "json" {
@@ -279,7 +321,13 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if idemKey != "" {
-		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.update %s", issueID))
+		if recErr := idempotency.Record(idemKey, fmt.Sprintf("jira.update %s", issueID)); recErr != nil {
+			warnMsg := fmt.Sprintf("Issue was updated, but the idempotency key could not be saved: %v", recErr)
+			warnings = append(warnings, warnMsg)
+			if mode != "json" && mode != "summary" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
+			}
+		}
 	}
 
 	if mode == "json" {
@@ -287,12 +335,13 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 			true, "jira", "update",
 			map[string]any{"issue": issueID},
 			map[string]any{
-				"updated":     true,
-				"diffs":       diffs,
-				"url":         fmt.Sprintf("%s/browse/%s", client.BaseURL(), issueID),
-				"idempotency": map[string]any{"key": output.IdempotencyKey("jira.update", issueID, payload)},
+				"updated":       true,
+				"diffs":         diffs,
+				"unified_diffs": extractUnifiedDiffs(diffs),
+				"url":           fmt.Sprintf("%s/browse/%s", client.BaseURL(), issueID),
+				"idempotency":   map[string]any{"key": output.IdempotencyKey("jira.update", issueID, payload)},
 			},
-			nil, nil, "", "", "", nil,
+			warnings, nil, "", "", "", nil,
 		))
 	}
 	if mode == "summary" {
@@ -360,6 +409,10 @@ func applySetOp(field, op, value string, fields, currentFields map[string]any) e
 			fields[field] = nil
 		} else if strings.HasPrefix(v, "accountId:") {
 			fields[field] = map[string]any{"accountId": strings.SplitN(v, ":", 2)[1]}
+		} else if strings.HasPrefix(v, "name:") {
+			fields[field] = map[string]any{"name": strings.SplitN(v, ":", 2)[1]}
+		} else if strings.TrimSpace(os.Getenv("JIRA_EMAIL")) != "" || strings.EqualFold(strings.TrimSpace(os.Getenv("JIRA_AUTH_MODE")), "basic") {
+			fields[field] = map[string]any{"name": v}
 		} else {
 			fields[field] = map[string]any{"accountId": v}
 		}
