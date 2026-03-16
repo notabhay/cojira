@@ -7,9 +7,20 @@ import (
 
 	"github.com/notabhay/cojira/internal/cli"
 	cerrors "github.com/notabhay/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/idempotency"
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 )
+
+type bulkTransitionPlan struct {
+	Version     int            `json:"version"`
+	JQL         string         `json:"jql"`
+	To          string         `json:"to"`
+	PayloadFile string         `json:"payload_file,omitempty"`
+	Payload     map[string]any `json:"payload,omitempty"`
+	Keys        []string       `json:"keys"`
+	Notify      bool           `json:"notify"`
+}
 
 // NewBulkTransitionCmd creates the "bulk-transition" subcommand.
 func NewBulkTransitionCmd() *cobra.Command {
@@ -28,9 +39,8 @@ func NewBulkTransitionCmd() *cobra.Command {
 	cmd.Flags().Bool("no-notify", false, "Disable notifications")
 	cmd.Flags().Bool("dry-run", false, "Preview changes without applying")
 	cmd.Flags().Bool("plan", false, "Alias for --dry-run")
-	_ = cmd.MarkFlagRequired("jql")
-	_ = cmd.MarkFlagRequired("to")
 	cli.AddOutputFlags(cmd, true)
+	cli.AddIdempotencyFlags(cmd)
 	return cmd
 }
 
@@ -48,63 +58,90 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 	pageSize, _ := cmd.Flags().GetInt("page-size")
 	limit, _ := cmd.Flags().GetInt("limit")
 	sleepSec, _ := cmd.Flags().GetFloat64("sleep")
-	noNotify, _ := cmd.Flags().GetBool("no-notify")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	quiet, _ := cmd.Flags().GetBool("quiet")
+	idemKey, _ := cmd.Flags().GetString("idempotency-key")
 
-	jql := applyDefaultScope(cmd, jqlFlag)
 	reqID := output.RequestID()
 
-	var extraPayload map[string]any
-	if payloadFile != "" {
-		extraPayload, err = readJSONFile(payloadFile)
-		if err != nil {
-			return err
-		}
-	}
-
-	keys, err := collectIssueKeys(client, jql, pageSize)
+	plan, idemKey, err := resolveBulkTransitionPlan(cmd, client, jqlFlag, toFlag, payloadFile, pageSize, limit, dryRun, idemKey)
 	if err != nil {
 		return err
 	}
-	if limit > 0 && len(keys) > limit {
-		keys = keys[:limit]
-	}
+	target := map[string]any{"jql": plan.JQL, "to": plan.To}
 
-	if len(keys) == 0 {
+	if len(plan.Keys) == 0 {
 		if mode == "json" {
 			return output.PrintJSON(output.BuildEnvelope(
-				true, "jira", "bulk-transition",
-				map[string]any{"jql": jql, "to": toFlag},
-				map[string]any{"items": []any{}, "summary": map[string]any{"total": 0, "ok": 0, "failed": 0, "dry_run": dryRun}},
+				true, "jira", "bulk-transition", target,
+				map[string]any{
+					"items":       []any{},
+					"summary":     map[string]any{"total": 0, "ok": 0, "failed": 0, "skipped": 0, "dry_run": dryRun},
+					"request_id":  reqID,
+					"idempotency": map[string]any{"key": idemKey},
+				},
 				nil, nil, "", "", "", nil,
 			))
 		}
 		if mode == "summary" {
-			fmt.Printf("Found 0 issues for JQL: %s\n", jql)
+			fmt.Printf("Found 0 issues for JQL: %s\n", plan.JQL)
 			return nil
 		}
 		fmt.Println("No issues found.")
 		return nil
 	}
 
+	if !dryRun && idempotency.IsDuplicate(idemKey) {
+		if mode == "json" {
+			return output.PrintJSON(output.BuildEnvelope(
+				true, "jira", "bulk-transition", target,
+				map[string]any{
+					"skipped":     true,
+					"reason":      "idempotency_key_already_used",
+					"request_id":  reqID,
+					"idempotency": map[string]any{"key": idemKey},
+				},
+				nil, nil, "", "", "", nil,
+			))
+		}
+		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Skipped bulk transition (idempotency key already used): %s\n", idemKey)
+		return nil
+	}
+
+	success := 0
+	skipped := 0
+	var failures []failureEntry
+	var items []map[string]any
+	var warnings []any
+	var completed []idempotency.ResumeItem
+	var remaining []idempotency.ResumeItem
+
 	if dryRun && mode != "json" && !quiet && mode != "summary" {
 		fmt.Print("[DRY-RUN MODE - no changes will be made]\n\n")
 	}
 
-	targetStatus := strings.TrimSpace(strings.ToLower(toFlag))
-	_ = targetStatus // used below via filterTransitionsByStatus
+	for idx, key := range plan.Keys {
+		item := map[string]any{"op": "transition", "target": map[string]any{"issue": key, "to": plan.To}, "ok": false}
+		checkpointKey := fmt.Sprintf("%s.issue.%04d.%s", idemKey, idx, key)
+		if !dryRun && idempotency.IsDuplicate(checkpointKey) {
+			item["ok"] = true
+			item["skipped"] = true
+			item["reason"] = "idempotency_checkpoint_already_used"
+			r := output.Receipt{OK: true, Message: fmt.Sprintf("Skipped %s (already completed in a prior bulk transition attempt)", key)}
+			item["receipt"] = r.Format()
+			items = append(items, item)
+			completed = append(completed, idempotency.ResumeItem{
+				ID:          key,
+				Description: "already completed in a prior attempt",
+				Target:      map[string]any{"issue": key, "to": plan.To},
+			})
+			skipped++
+			output.EmitProgress(mode, quiet, idx+1, len(plan.Keys), fmt.Sprintf("%s -> %s", key, plan.To), "SKIPPED")
+			continue
+		}
 
-	success := 0
-	var failures []failureEntry
-	var items []map[string]any
-	var warnings []any
-
-	for idx, key := range keys {
-		item := map[string]any{"op": "transition", "target": map[string]any{"issue": key, "to": toFlag}, "ok": false}
 		var opErr error
 
-		// Get current status.
 		issue, e := client.GetIssue(key, "status", "")
 		if e != nil {
 			opErr = e
@@ -114,22 +151,21 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 			fd, _ := issue["fields"].(map[string]any)
 			fromStatus := safeString(fd, "status", "name")
 
-			// Find transition.
 			data, e := client.ListTransitions(key)
 			if e != nil {
 				opErr = e
 			} else {
 				transitions, _ := data["transitions"].([]any)
-				matches := filterTransitionsByStatus(transitions, toFlag)
+				matches := filterTransitionsByStatus(transitions, plan.To)
 				if len(matches) == 0 {
 					opErr = &cerrors.CojiraError{
 						Code:    cerrors.TransitionNotFound,
-						Message: fmt.Sprintf("No transitions to status %q found", toFlag),
+						Message: fmt.Sprintf("No transitions to status %q found", plan.To),
 					}
 				} else {
 					if len(matches) > 1 {
 						first := matches[0].(map[string]any)
-						warnMsg := fmt.Sprintf("Multiple transitions match status '%s'; using first: %v", toFlag, first["id"])
+						warnMsg := fmt.Sprintf("Multiple transitions match status '%s'; using first: %v", plan.To, first["id"])
 						item["warning"] = warnMsg
 						warnObj, _ := output.ErrorObj(cerrors.AmbiguousTransition, warnMsg, "", "", map[string]any{
 							"action": "run", "command": fmt.Sprintf("cojira jira transitions %s --output-mode json", key),
@@ -142,7 +178,7 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 					transitionID := fmt.Sprintf("%v", first["id"])
 					toName := safeString(first, "to", "name")
 					if toName == "" {
-						toName = toFlag
+						toName = plan.To
 					}
 					item["transition_id"] = transitionID
 					item["from_status"] = fromStatus
@@ -160,15 +196,18 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 							fmt.Println(r.Format())
 						}
 						success++
+						completed = append(completed, idempotency.ResumeItem{
+							ID:          key,
+							Description: "dry-run preview generated",
+							Target:      map[string]any{"issue": key, "to": plan.To},
+						})
 					} else {
 						payload := map[string]any{"transition": map[string]any{"id": transitionID}}
-						if extraPayload != nil {
-							for k, v := range extraPayload {
-								payload[k] = v
-							}
-							payload["transition"] = map[string]any{"id": transitionID}
+						for k, v := range plan.Payload {
+							payload[k] = v
 						}
-						if e := client.TransitionIssue(key, payload, !noNotify); e != nil {
+						payload["transition"] = map[string]any{"id": transitionID}
+						if e := client.TransitionIssue(key, payload, plan.Notify); e != nil {
 							opErr = e
 						} else {
 							issue2, e2 := client.GetIssue(key, "status", "")
@@ -187,12 +226,19 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 										Message:  fmt.Sprintf("Transition submitted for %s but the issue returned no status during verification.", key),
 										ExitCode: 1,
 									}
-								} else if !strings.EqualFold(newStatus, toName) && !strings.EqualFold(newStatus, toFlag) {
+								} else if !strings.EqualFold(newStatus, toName) && !strings.EqualFold(newStatus, plan.To) {
 									opErr = &cerrors.CojiraError{
 										Code:     cerrors.TransitionFailed,
 										Message:  fmt.Sprintf("Transitioned %s using %s, but Jira still reports status %q instead of %q.", key, transitionID, newStatus, toName),
 										ExitCode: 1,
 									}
+								} else if recErr := idempotency.RecordValue(checkpointKey, "jira.bulk-transition issue", map[string]any{"issue": key, "to": newStatus}); recErr != nil {
+									opErr = &cerrors.CojiraError{
+										Code:     cerrors.OpFailed,
+										Message:  fmt.Sprintf("Transitioned %s, but the resume checkpoint could not be saved: %v", key, recErr),
+										ExitCode: 1,
+									}
+									item["checkpoint_error"] = recErr.Error()
 								} else {
 									r := output.Receipt{OK: true, Message: fmt.Sprintf("Transitioned %s: %s -> %s (transition %s)", key, fromStatus, newStatus, transitionID)}
 									item["receipt"] = r.Format()
@@ -202,6 +248,11 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 										fmt.Println(r.Format())
 									}
 									success++
+									completed = append(completed, idempotency.ResumeItem{
+										ID:          key,
+										Description: "transitioned successfully",
+										Target:      map[string]any{"issue": key, "to": newStatus},
+									})
 								}
 							}
 						}
@@ -219,6 +270,11 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), r.Format())
 			}
 			failures = append(failures, failureEntry{key: key, err: opErr.Error()})
+			remaining = append(remaining, idempotency.ResumeItem{
+				ID:          key,
+				Description: "retry this issue transition",
+				Target:      map[string]any{"issue": key, "to": plan.To},
+			})
 		}
 
 		items = append(items, item)
@@ -226,18 +282,37 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 		if !item["ok"].(bool) {
 			status = "FAILED"
 		}
-		output.EmitProgress(mode, quiet, idx+1, len(keys), fmt.Sprintf("%s -> %s", key, toFlag), status)
+		output.EmitProgress(mode, quiet, idx+1, len(plan.Keys), fmt.Sprintf("%s -> %s", key, plan.To), status)
 
 		if sleepSec > 0 {
 			time.Sleep(time.Duration(sleepSec * float64(time.Second)))
 		}
 	}
 
+	if !dryRun && len(failures) == 0 {
+		if recErr := idempotency.Record(idemKey, "jira.bulk-transition"); recErr != nil {
+			return &cerrors.CojiraError{
+				Code:     cerrors.OpFailed,
+				Message:  fmt.Sprintf("Bulk transition completed, but the completion marker could not be saved: %v", recErr),
+				ExitCode: 1,
+			}
+		}
+	}
+
 	summary := map[string]any{
-		"total":   len(keys),
+		"total":   len(plan.Keys),
 		"ok":      success,
 		"failed":  len(failures),
+		"skipped": skipped,
 		"dry_run": dryRun,
+	}
+
+	var resumable any
+	if !dryRun && len(failures) > 0 {
+		state := idempotency.NewResumeState("jira.bulk-transition", idemKey, reqID, target, plan)
+		state.Completed = completed
+		state.Remaining = remaining
+		resumable = state
 	}
 
 	if mode == "json" {
@@ -247,9 +322,14 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 			errs = append(errs, errObj)
 		}
 		return output.PrintJSON(output.BuildEnvelope(
-			len(failures) == 0, "jira", "bulk-transition",
-			map[string]any{"jql": jql, "to": toFlag},
-			map[string]any{"items": items, "summary": summary, "request_id": reqID},
+			len(failures) == 0, "jira", "bulk-transition", target,
+			map[string]any{
+				"items":           items,
+				"summary":         summary,
+				"request_id":      reqID,
+				"idempotency":     map[string]any{"key": idemKey},
+				"resumable_state": resumable,
+			},
 			warnings, errs, "", "", "", nil,
 		))
 	}
@@ -257,6 +337,7 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 	if mode == "summary" {
 		fmt.Printf("Bulk transition complete: %d succeeded, %d failed.\n", success, len(failures))
 		if len(failures) > 0 {
+			fmt.Printf("Resume with the same command and --idempotency-key %s.\n", idemKey)
 			return &cerrors.CojiraError{ExitCode: 1}
 		}
 		return nil
@@ -265,9 +346,88 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 	if !quiet {
 		fmt.Printf("\nSummary: %d succeeded, %d failed\n", success, len(failures))
 		printFailures(failures)
+		if len(failures) > 0 {
+			fmt.Printf("Resume with the same command and --idempotency-key %s.\n", idemKey)
+		}
 	}
 	if len(failures) > 0 {
 		return &cerrors.CojiraError{ExitCode: 1}
 	}
 	return nil
+}
+
+func resolveBulkTransitionPlan(cmd *cobra.Command, client *Client, jqlFlag, toFlag, payloadFile string, pageSize, limit int, dryRun bool, requestedKey string) (bulkTransitionPlan, string, error) {
+	if requestedKey != "" {
+		var stored bulkTransitionPlan
+		found, err := idempotency.LoadValue(requestedKey+".plan", &stored)
+		if err != nil {
+			return bulkTransitionPlan{}, "", err
+		}
+		if found {
+			return stored, requestedKey, nil
+		}
+	}
+
+	if strings.TrimSpace(jqlFlag) == "" {
+		return bulkTransitionPlan{}, "", &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  "Missing --jql (or provide --idempotency-key for a saved resumable run).",
+			ExitCode: 2,
+		}
+	}
+	if strings.TrimSpace(toFlag) == "" {
+		return bulkTransitionPlan{}, "", &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  "Missing --to (or provide --idempotency-key for a saved resumable run).",
+			ExitCode: 2,
+		}
+	}
+
+	var payload map[string]any
+	var err error
+	if payloadFile != "" {
+		payload, err = readJSONFile(payloadFile)
+		if err != nil {
+			return bulkTransitionPlan{}, "", err
+		}
+	}
+	noNotify, _ := cmd.Flags().GetBool("no-notify")
+	jql := applyDefaultScope(cmd, jqlFlag)
+	keys, err := collectIssueKeys(client, jql, pageSize)
+	if err != nil {
+		return bulkTransitionPlan{}, "", err
+	}
+	if limit > 0 && len(keys) > limit {
+		keys = keys[:limit]
+	}
+
+	plan := bulkTransitionPlan{
+		Version:     1,
+		JQL:         jql,
+		To:          toFlag,
+		PayloadFile: payloadFile,
+		Payload:     payload,
+		Keys:        keys,
+		Notify:      !noNotify,
+	}
+
+	idemKey := requestedKey
+	if idemKey == "" {
+		idemKey = output.IdempotencyKey("jira.bulk-transition", plan)
+	}
+
+	var stored bulkTransitionPlan
+	found, err := idempotency.LoadValue(idemKey+".plan", &stored)
+	if err != nil {
+		return bulkTransitionPlan{}, "", err
+	}
+	if found {
+		return stored, idemKey, nil
+	}
+	if !dryRun {
+		if err := idempotency.RecordValue(idemKey+".plan", "jira.bulk-transition plan", plan); err != nil {
+			return bulkTransitionPlan{}, "", err
+		}
+	}
+	return plan, idemKey, nil
 }

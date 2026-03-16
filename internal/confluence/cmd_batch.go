@@ -17,6 +17,21 @@ import (
 
 const batchDelayDefault = 1.5
 
+type confluenceBatchPlan struct {
+	Version    int                     `json:"version"`
+	Source     string                  `json:"source,omitempty"`
+	Operations []confluenceBatchPlanOp `json:"operations"`
+}
+
+type confluenceBatchPlanOp struct {
+	ID          string         `json:"id"`
+	Op          string         `json:"op"`
+	Description string         `json:"description"`
+	Target      map[string]any `json:"target,omitempty"`
+	Title       string         `json:"title,omitempty"`
+	Body        string         `json:"body,omitempty"`
+}
+
 // NewBatchCmd creates the "batch" subcommand.
 func NewBatchCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -56,69 +71,20 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	}
 
 	reqID := output.RequestID()
-
-	if useStdin && configFile != "" {
-		return &cerrors.CojiraError{
-			Code:     cerrors.OpFailed,
-			Message:  "Cannot use both --stdin and a config file.",
-			ExitCode: 2,
-		}
+	plan, idemKey, target, err := resolveConfluenceBatchPlan(client, useStdin, configFile, dryRun, idemKey)
+	if err != nil {
+		return err
 	}
 
-	var config map[string]any
-	var rootDir string
-
-	if useStdin {
-		// Read operations from stdin (newline-delimited JSON).
-		var operations []any
-		decoder := json.NewDecoder(os.Stdin)
-		for decoder.More() {
-			var op any
-			if decErr := decoder.Decode(&op); decErr != nil {
-				return &cerrors.CojiraError{
-					Code:     cerrors.InvalidJSON,
-					Message:  fmt.Sprintf("Invalid JSON on stdin: %v", decErr),
-					ExitCode: 1,
-				}
-			}
-			operations = append(operations, op)
-		}
-		config = map[string]any{"operations": operations}
-		cwd, _ := os.Getwd()
-		rootDir = cwd
-	} else if configFile != "" {
-		configData, readErr := readJSONFile(configFile)
-		if readErr != nil {
-			if mode == "json" {
-				errObj, _ := output.ErrorObj(cerrors.FileNotFound, fmt.Sprintf("Config file not found: %s", configFile), "", "", nil)
-				return output.PrintJSON(output.BuildEnvelope(
-					false, "confluence", "batch",
-					map[string]any{"config": configFile},
-					nil, nil, []any{errObj}, "", "", "", nil,
-				))
-			}
-			fmt.Fprintf(os.Stderr, "Error reading config: %v\n", readErr)
-			return readErr
-		}
-		config = configData
-		rootDir = filepath.Dir(configFile)
-	} else {
-		return &cerrors.CojiraError{
-			Code:     cerrors.OpFailed,
-			Message:  "Provide a config file or --stdin.",
-			ExitCode: 2,
-		}
-	}
-
-	operations, _ := config["operations"].([]any)
-	if len(operations) == 0 {
+	if len(plan.Operations) == 0 {
 		if mode == "json" {
 			return output.PrintJSON(output.BuildEnvelope(
-				true, "confluence", "batch",
-				map[string]any{"config": configFile},
+				true, "confluence", "batch", target,
 				map[string]any{
-					"items":   []any{},
-					"summary": map[string]any{"total": 0, "ok": 0, "failed": 0, "dry_run": dryRun},
+					"items":       []any{},
+					"summary":     map[string]any{"total": 0, "ok": 0, "failed": 0, "skipped": 0, "dry_run": dryRun},
+					"request_id":  reqID,
+					"idempotency": map[string]any{"key": idemKey},
 				},
 				nil, nil, "", "", "", nil,
 			))
@@ -127,37 +93,25 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Idempotency check.
-	if idemKey != "" && !dryRun {
-		if idempotency.IsDuplicate(idemKey) {
-			if mode == "json" {
-				target := map[string]any{"config": configFile}
-				if useStdin {
-					target = map[string]any{"stdin": true}
-				}
-				return output.PrintJSON(output.BuildEnvelope(
-					true, "confluence", "batch", target,
-					map[string]any{"skipped": true, "reason": "idempotency_key_already_used"},
-					nil, nil, "", "", "", nil,
-				))
-			}
-			fmt.Fprintf(os.Stderr, "Skipped batch (idempotency key already used): %s\n", idemKey)
-			return nil
+	if !dryRun && idempotency.IsDuplicate(idemKey) {
+		if mode == "json" {
+			return output.PrintJSON(output.BuildEnvelope(
+				true, "confluence", "batch", target,
+				map[string]any{
+					"skipped":     true,
+					"reason":      "idempotency_key_already_used",
+					"request_id":  reqID,
+					"idempotency": map[string]any{"key": idemKey},
+				},
+				nil, nil, "", "", "", nil,
+			))
 		}
-	}
-
-	baseDir, _ := config["base_dir"].(string)
-	basePath := rootDir
-	if baseDir != "" {
-		if filepath.IsAbs(baseDir) {
-			basePath = baseDir
-		} else {
-			basePath = filepath.Join(rootDir, baseDir)
-		}
+		fmt.Fprintf(os.Stderr, "Skipped batch (idempotency key already used): %s\n", idemKey)
+		return nil
 	}
 
 	if mode != "json" && !quiet && mode != "summary" {
-		fmt.Printf("Batch mode: %d operation(s)\n", len(operations))
+		fmt.Printf("Batch mode: %d operation(s)\n", len(plan.Operations))
 		if dryRun {
 			fmt.Println("[DRY-RUN MODE - no changes will be made]")
 			fmt.Println()
@@ -171,62 +125,70 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	failureCount := 0
 	skippedCount := 0
 	var failures []string
-	var warningObjs []any
+	var completed []idempotency.ResumeItem
+	var remaining []idempotency.ResumeItem
 
-	for idx, opAny := range operations {
-		op, ok := opAny.(map[string]any)
-		if !ok {
+	for idx, op := range plan.Operations {
+		item := map[string]any{
+			"op":          op.Op,
+			"ok":          false,
+			"target":      op.Target,
+			"description": op.Description,
+		}
+		opKey := fmt.Sprintf("%s.op.%s", idemKey, op.ID)
+		if !dryRun && idempotency.IsDuplicate(opKey) {
+			item["ok"] = true
+			item["skipped"] = true
+			item["reason"] = "idempotency_checkpoint_already_used"
+			receipt := output.Receipt{OK: true, Message: fmt.Sprintf("Skipped %s (already completed in a prior batch attempt)", op.Description)}
+			item["receipt"] = receipt.Format()
+			items = append(items, item)
+			completed = append(completed, idempotency.ResumeItem{
+				ID:          op.ID,
+				Description: op.Description,
+				Target:      op.Target,
+			})
+			skippedCount++
+			output.EmitProgress(mode, quiet, idx+1, len(plan.Operations), op.Description, "SKIPPED")
 			continue
 		}
-		opType, _ := op["op"].(string)
-		opType = strings.ToLower(opType)
-		desc := ""
-		item := map[string]any{"op": opType, "ok": false}
-		opKey := ""
-		if idemKey != "" && !dryRun {
-			opKey = fmt.Sprintf("%s.op.%04d", idemKey, idx)
-			if idempotency.IsDuplicate(opKey) {
-				item["ok"] = true
-				item["skipped"] = true
-				item["reason"] = "idempotency_checkpoint_already_used"
-				receipt := output.Receipt{OK: true, Message: fmt.Sprintf("Skipped %s (already completed in a prior batch attempt)", stringOr(desc, opType))}
-				item["receipt"] = receipt.Format()
-				items = append(items, item)
-				skippedCount++
-				output.EmitProgress(mode, quiet, idx+1, len(operations), stringOr(desc, opType), "SKIPPED")
-				continue
+
+		opErr := executeConfluenceBatchPlanOp(client, op, dryRun)
+		if opErr == nil && !dryRun {
+			if recErr := idempotency.RecordValue(opKey, op.Description, op.Target); recErr != nil {
+				opErr = fmt.Errorf("%s succeeded, but the resume checkpoint could not be saved: %w", op.Description, recErr)
+				item["checkpoint_error"] = recErr.Error()
 			}
 		}
 
-		opErr := executeBatchOp(client, op, opType, basePath, dryRun, &desc, item)
 		if opErr != nil {
 			item["ok"] = false
 			item["error"] = opErr.Error()
-			receipt := output.Receipt{OK: false, Message: fmt.Sprintf("%s: %v", desc, opErr)}
+			receipt := output.Receipt{OK: false, Message: fmt.Sprintf("%s: %v", op.Description, opErr)}
 			item["receipt"] = receipt.Format()
 			if mode != "json" && !quiet && mode != "summary" {
 				fmt.Fprintln(os.Stderr, receipt.Format())
 			}
 			failureCount++
 			failures = append(failures, opErr.Error())
+			remaining = append(remaining, idempotency.ResumeItem{
+				ID:          op.ID,
+				Description: op.Description,
+				Target:      op.Target,
+			})
 		} else {
 			item["ok"] = true
-			receipt := output.Receipt{OK: true, DryRun: dryRun, Message: desc}
+			receipt := output.Receipt{OK: true, DryRun: dryRun, Message: op.Description}
 			item["receipt"] = receipt.Format()
 			if mode != "json" && !quiet && mode != "summary" {
 				fmt.Println(receipt.Format())
 			}
-			if opKey != "" {
-				if recErr := idempotency.Record(opKey, desc); recErr != nil {
-					warnMsg := fmt.Sprintf("%s: operation succeeded, but the idempotency checkpoint could not be saved: %v", desc, recErr)
-					item["idempotency_warning"] = warnMsg
-					warningObjs = append(warningObjs, warnMsg)
-					if mode != "json" && !quiet && mode != "summary" {
-						_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
-					}
-				}
-			}
 			successCount++
+			completed = append(completed, idempotency.ResumeItem{
+				ID:          op.ID,
+				Description: op.Description,
+				Target:      op.Target,
+			})
 		}
 
 		items = append(items, item)
@@ -234,37 +196,40 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		if !item["ok"].(bool) {
 			status = "FAILED"
 		}
-		output.EmitProgress(mode, quiet, idx+1, len(operations), desc, status)
+		output.EmitProgress(mode, quiet, idx+1, len(plan.Operations), op.Description, status)
 
-		// Throttle between operations.
-		if !dryRun && idx < len(operations)-1 && sleepDelay > 0 {
+		if !dryRun && idx < len(plan.Operations)-1 && sleepDelay > 0 {
 			time.Sleep(time.Duration(sleepDelay * float64(time.Second)))
 		}
 	}
 
+	if !dryRun && failureCount == 0 {
+		if recErr := idempotency.Record(idemKey, "confluence.batch"); recErr != nil {
+			return &cerrors.CojiraError{
+				Code:     cerrors.OpFailed,
+				Message:  fmt.Sprintf("Batch completed, but the completion marker could not be saved: %v", recErr),
+				ExitCode: 1,
+			}
+		}
+	}
+
 	summary := map[string]any{
-		"total":   len(operations),
+		"total":   len(plan.Operations),
 		"ok":      successCount,
 		"failed":  failureCount,
 		"skipped": skippedCount,
 		"dry_run": dryRun,
 	}
 
-	if idemKey != "" && !dryRun && failureCount == 0 {
-		if recErr := idempotency.Record(idemKey, fmt.Sprintf("confluence.batch %s", configFile)); recErr != nil {
-			warnMsg := fmt.Sprintf("Batch completed, but the idempotency completion marker could not be saved: %v", recErr)
-			warningObjs = append(warningObjs, warnMsg)
-			if mode != "json" && !quiet && mode != "summary" {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
-			}
-		}
+	var resumable any
+	if !dryRun && failureCount > 0 {
+		state := idempotency.NewResumeState("confluence.batch", idemKey, reqID, target, plan)
+		state.Completed = completed
+		state.Remaining = remaining
+		resumable = state
 	}
 
 	if mode == "json" {
-		target := map[string]any{"config": configFile}
-		if useStdin {
-			target = map[string]any{"stdin": true}
-		}
 		var errObjs []any
 		for _, msg := range failures {
 			obj, _ := output.ErrorObj(cerrors.OpFailed, msg, "", "", nil)
@@ -272,14 +237,21 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		}
 		return output.PrintJSON(output.BuildEnvelope(
 			failureCount == 0, "confluence", "batch", target,
-			map[string]any{"items": items, "summary": summary, "request_id": reqID},
-			warningObjs, errObjs, "", "", "", nil,
+			map[string]any{
+				"items":           items,
+				"summary":         summary,
+				"request_id":      reqID,
+				"idempotency":     map[string]any{"key": idemKey},
+				"resumable_state": resumable,
+			},
+			nil, errObjs, "", "", "", nil,
 		))
 	}
 
 	if mode == "summary" {
 		fmt.Printf("Batch complete: %d succeeded, %d failed.\n", successCount, failureCount)
 		if failureCount > 0 {
+			fmt.Printf("Resume with the same command and --idempotency-key %s.\n", idemKey)
 			return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "Batch had failures", ExitCode: 1}
 		}
 		return nil
@@ -287,6 +259,9 @@ func runBatch(cmd *cobra.Command, args []string) error {
 
 	if !quiet {
 		fmt.Printf("\nSummary: %d succeeded, %d failed\n", successCount, failureCount)
+		if failureCount > 0 {
+			fmt.Printf("Resume with the same command and --idempotency-key %s.\n", idemKey)
+		}
 	}
 	if failureCount > 0 {
 		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "Batch had failures", ExitCode: 1}
@@ -294,141 +269,272 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func executeBatchOp(client *Client, op map[string]any, opType, basePath string, dryRun bool, desc *string, item map[string]any) error {
-	switch opType {
-	case "move":
-		pageStr := fmt.Sprintf("%v", op["page"])
-		pageID, err := ResolvePageID(client, pageStr, "")
+func resolveConfluenceBatchPlan(client *Client, useStdin bool, configFile string, dryRun bool, requestedKey string) (confluenceBatchPlan, string, map[string]any, error) {
+	if requestedKey != "" {
+		var stored confluenceBatchPlan
+		found, err := idempotency.LoadValue(requestedKey+".plan", &stored)
 		if err != nil {
-			return err
+			return confluenceBatchPlan{}, "", nil, err
 		}
+		if found {
+			return stored, requestedKey, targetForConfluenceBatchSource(stored.Source), nil
+		}
+	}
 
-		parentVal := op["parent"]
-		var parentID string
-		if parentVal == nil || parentVal == float64(0) || fmt.Sprintf("%v", parentVal) == "0" || fmt.Sprintf("%v", parentVal) == "root" {
-			*desc = fmt.Sprintf("move %s -> root", pageID)
+	if useStdin && configFile != "" {
+		return confluenceBatchPlan{}, "", nil, &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  "Cannot use both --stdin and a config file.",
+			ExitCode: 2,
+		}
+	}
+
+	var config map[string]any
+	var rootDir string
+	source := ""
+
+	if useStdin {
+		var operations []any
+		decoder := json.NewDecoder(os.Stdin)
+		for decoder.More() {
+			var op any
+			if decErr := decoder.Decode(&op); decErr != nil {
+				return confluenceBatchPlan{}, "", nil, &cerrors.CojiraError{
+					Code:     cerrors.InvalidJSON,
+					Message:  fmt.Sprintf("Invalid JSON on stdin: %v", decErr),
+					ExitCode: 1,
+				}
+			}
+			operations = append(operations, op)
+		}
+		config = map[string]any{"operations": operations}
+		cwd, _ := os.Getwd()
+		rootDir = cwd
+		source = "stdin"
+	} else if configFile != "" {
+		configData, readErr := readJSONFile(configFile)
+		if readErr != nil {
+			return confluenceBatchPlan{}, "", nil, readErr
+		}
+		config = configData
+		rootDir = filepath.Dir(configFile)
+		source = configFile
+	} else {
+		return confluenceBatchPlan{}, "", nil, &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  "Provide a config file, --stdin, or --idempotency-key for a saved resumable run.",
+			ExitCode: 2,
+		}
+	}
+
+	operations, _ := config["operations"].([]any)
+	baseDir, _ := config["base_dir"].(string)
+	basePath := rootDir
+	if baseDir != "" {
+		if filepath.IsAbs(baseDir) {
+			basePath = baseDir
 		} else {
-			parentID, err = ResolvePageID(client, fmt.Sprintf("%v", parentVal), "")
-			if err != nil {
-				return err
-			}
-			*desc = fmt.Sprintf("move %s -> %s", pageID, parentID)
+			basePath = filepath.Join(rootDir, baseDir)
 		}
-		item["target"] = map[string]any{"page_id": pageID, "parent_id": parentID}
+	}
 
-		if !dryRun {
-			page, fetchErr := client.GetPageByID(pageID, "version,body.storage")
-			if fetchErr != nil {
-				return fetchErr
+	planOps := make([]confluenceBatchPlanOp, 0, len(operations))
+	for idx, opAny := range operations {
+		op, ok := opAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		opType, _ := op["op"].(string)
+		opType = strings.ToLower(strings.TrimSpace(opType))
+		switch opType {
+		case "move":
+			pageID, err := ResolvePageID(client, fmt.Sprintf("%v", op["page"]), "")
+			if err != nil {
+				return confluenceBatchPlan{}, "", nil, err
 			}
-			body := getNestedString(page, "body", "storage", "value")
-			version := int(getNestedFloat(page, "version", "number"))
-			title, _ := page["title"].(string)
-
-			ancestors := []map[string]any{}
+			var parentID string
+			parentVal := op["parent"]
+			if parentVal != nil && parentVal != float64(0) && fmt.Sprintf("%v", parentVal) != "0" && fmt.Sprintf("%v", parentVal) != "root" {
+				parentID, err = ResolvePageID(client, fmt.Sprintf("%v", parentVal), "")
+				if err != nil {
+					return confluenceBatchPlan{}, "", nil, err
+				}
+			}
+			desc := fmt.Sprintf("move %s -> root", pageID)
+			target := map[string]any{"page_id": pageID, "parent_id": parentID}
 			if parentID != "" {
-				ancestors = []map[string]any{{"id": parentID}}
+				desc = fmt.Sprintf("move %s -> %s", pageID, parentID)
 			}
-			payload := map[string]any{
-				"id":        pageID,
-				"type":      "page",
-				"title":     title,
-				"version":   map[string]any{"number": version + 1},
-				"ancestors": ancestors,
-				"body": map[string]any{
-					"storage": map[string]any{
-						"value":          body,
-						"representation": "storage",
-					},
-				},
-			}
-			_, err = client.UpdatePage(pageID, payload)
+			planOps = append(planOps, confluenceBatchPlanOp{
+				ID:          fmt.Sprintf("%04d-%s", idx, output.IdempotencyKey(opType, target)[:12]),
+				Op:          opType,
+				Description: desc,
+				Target:      target,
+			})
+
+		case "rename":
+			pageID, err := ResolvePageID(client, fmt.Sprintf("%v", op["page"]), "")
 			if err != nil {
-				return err
+				return confluenceBatchPlan{}, "", nil, err
 			}
+			newTitle, _ := op["title"].(string)
+			target := map[string]any{"page_id": pageID, "title": newTitle}
+			planOps = append(planOps, confluenceBatchPlanOp{
+				ID:          fmt.Sprintf("%04d-%s", idx, output.IdempotencyKey(opType, target)[:12]),
+				Op:          opType,
+				Description: fmt.Sprintf("rename %s -> '%s'", pageID, newTitle),
+				Target:      target,
+				Title:       newTitle,
+			})
+
+		case "update":
+			pageID, err := ResolvePageID(client, fmt.Sprintf("%v", op["page"]), "")
+			if err != nil {
+				return confluenceBatchPlan{}, "", nil, err
+			}
+			fileRel, _ := op["file"].(string)
+			content, readErr := readTextFile(filepath.Join(basePath, fileRel))
+			if readErr != nil {
+				return confluenceBatchPlan{}, "", nil, readErr
+			}
+			title, _ := op["title"].(string)
+			target := map[string]any{"page_id": pageID, "file": fileRel}
+			planOps = append(planOps, confluenceBatchPlanOp{
+				ID:          fmt.Sprintf("%04d-%s", idx, output.IdempotencyKey(opType, target, title, content)[:12]),
+				Op:          opType,
+				Description: fmt.Sprintf("update %s from %s", pageID, fileRel),
+				Target:      target,
+				Title:       title,
+				Body:        content,
+			})
+
+		default:
+			return confluenceBatchPlan{}, "", nil, fmt.Errorf("unknown operation: %s", opType)
 		}
-		return nil
+	}
+
+	plan := confluenceBatchPlan{
+		Version:    1,
+		Source:     source,
+		Operations: planOps,
+	}
+
+	idemKey := requestedKey
+	if idemKey == "" {
+		idemKey = output.IdempotencyKey("confluence.batch", plan)
+	}
+
+	var stored confluenceBatchPlan
+	found, err := idempotency.LoadValue(idemKey+".plan", &stored)
+	if err != nil {
+		return confluenceBatchPlan{}, "", nil, err
+	}
+	if found {
+		return stored, idemKey, targetForConfluenceBatchSource(stored.Source), nil
+	}
+	if !dryRun {
+		if err := idempotency.RecordValue(idemKey+".plan", "confluence.batch plan", plan); err != nil {
+			return confluenceBatchPlan{}, "", nil, err
+		}
+	}
+	return plan, idemKey, targetForConfluenceBatchSource(source), nil
+}
+
+func executeConfluenceBatchPlanOp(client *Client, op confluenceBatchPlanOp, dryRun bool) error {
+	switch op.Op {
+	case "move":
+		pageID, _ := op.Target["page_id"].(string)
+		parentID, _ := op.Target["parent_id"].(string)
+		if dryRun {
+			return nil
+		}
+		page, fetchErr := client.GetPageByID(pageID, "version,body.storage")
+		if fetchErr != nil {
+			return fetchErr
+		}
+		body := getNestedString(page, "body", "storage", "value")
+		version := int(getNestedFloat(page, "version", "number"))
+		title, _ := page["title"].(string)
+
+		ancestors := []map[string]any{}
+		if parentID != "" {
+			ancestors = []map[string]any{{"id": parentID}}
+		}
+		payload := map[string]any{
+			"id":        pageID,
+			"type":      "page",
+			"title":     title,
+			"version":   map[string]any{"number": version + 1},
+			"ancestors": ancestors,
+			"body": map[string]any{
+				"storage": map[string]any{
+					"value":          body,
+					"representation": "storage",
+				},
+			},
+		}
+		_, err := client.UpdatePage(pageID, payload)
+		return err
 
 	case "rename":
-		pageStr := fmt.Sprintf("%v", op["page"])
-		pageID, err := ResolvePageID(client, pageStr, "")
-		if err != nil {
-			return err
+		pageID, _ := op.Target["page_id"].(string)
+		if dryRun {
+			return nil
 		}
-		newTitle, _ := op["title"].(string)
-		*desc = fmt.Sprintf("rename %s -> '%s'", pageID, newTitle)
-		item["target"] = map[string]any{"page_id": pageID, "title": newTitle}
-
-		if !dryRun {
-			page, fetchErr := client.GetPageByID(pageID, "version,body.storage")
-			if fetchErr != nil {
-				return fetchErr
-			}
-			body := getNestedString(page, "body", "storage", "value")
-			version := int(getNestedFloat(page, "version", "number"))
-			payload := map[string]any{
-				"type":    "page",
-				"title":   newTitle,
-				"version": map[string]any{"number": version + 1},
-				"body": map[string]any{
-					"storage": map[string]any{
-						"value":          body,
-						"representation": "storage",
-					},
+		page, fetchErr := client.GetPageByID(pageID, "version,body.storage")
+		if fetchErr != nil {
+			return fetchErr
+		}
+		body := getNestedString(page, "body", "storage", "value")
+		version := int(getNestedFloat(page, "version", "number"))
+		payload := map[string]any{
+			"type":    "page",
+			"title":   op.Title,
+			"version": map[string]any{"number": version + 1},
+			"body": map[string]any{
+				"storage": map[string]any{
+					"value":          body,
+					"representation": "storage",
 				},
-			}
-			_, err = client.UpdatePage(pageID, payload)
-			if err != nil {
-				return err
-			}
+			},
 		}
-		return nil
+		_, err := client.UpdatePage(pageID, payload)
+		return err
 
 	case "update":
-		pageStr := fmt.Sprintf("%v", op["page"])
-		pageID, err := ResolvePageID(client, pageStr, "")
-		if err != nil {
-			return err
+		pageID, _ := op.Target["page_id"].(string)
+		if dryRun {
+			return nil
 		}
-		fileRel, _ := op["file"].(string)
-		filePath := filepath.Join(basePath, fileRel)
-		*desc = fmt.Sprintf("update %s from %s", pageID, fileRel)
-		item["target"] = map[string]any{"page_id": pageID, "file": filePath}
-
-		content, readErr := readTextFile(filePath)
-		if readErr != nil {
-			return readErr
+		page, fetchErr := client.GetPageByID(pageID, "version")
+		if fetchErr != nil {
+			return fetchErr
 		}
-
-		if !dryRun {
-			page, fetchErr := client.GetPageByID(pageID, "version")
-			if fetchErr != nil {
-				return fetchErr
-			}
-			title, _ := page["title"].(string)
-			if opTitle, ok := op["title"].(string); ok && opTitle != "" {
-				title = opTitle
-			}
-			version := int(getNestedFloat(page, "version", "number"))
-			payload := map[string]any{
-				"type":    "page",
-				"title":   title,
-				"version": map[string]any{"number": version + 1},
-				"body": map[string]any{
-					"storage": map[string]any{
-						"value":          content,
-						"representation": "storage",
-					},
+		title, _ := page["title"].(string)
+		if op.Title != "" {
+			title = op.Title
+		}
+		version := int(getNestedFloat(page, "version", "number"))
+		payload := map[string]any{
+			"type":    "page",
+			"title":   title,
+			"version": map[string]any{"number": version + 1},
+			"body": map[string]any{
+				"storage": map[string]any{
+					"value":          op.Body,
+					"representation": "storage",
 				},
-			}
-			_, err = client.UpdatePage(pageID, payload)
-			if err != nil {
-				return err
-			}
+			},
 		}
-		return nil
-
-	default:
-		return fmt.Errorf("unknown operation: %s", opType)
+		_, err := client.UpdatePage(pageID, payload)
+		return err
 	}
+	return fmt.Errorf("unknown operation: %s", op.Op)
+}
+
+func targetForConfluenceBatchSource(source string) map[string]any {
+	if source == "stdin" {
+		return map[string]any{"stdin": true}
+	}
+	return map[string]any{"config": source}
 }
