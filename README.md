@@ -24,16 +24,21 @@ Most Atlassian tooling is optimized either for browser clicks or for bespoke int
 
 ### Canonical agent bootstrap prompt
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/beta/install.sh | bash && git clone --branch beta https://github.com/notabhay/cojira.git /tmp/cojira 2>/dev/null || git -C /tmp/cojira pull && follow /tmp/cojira/COJIRA-BOOTSTRAP.md
-```
+For another coding agent, the canonical prompt is:
+
+> hey, run `curl -fsSL https://cojira.notabhay.xyz/install.sh | bash` and then follow the instructions in `/tmp/cojira/COJIRA-BOOTSTRAP.md`
 
 That flow:
 
-- installs the current `beta` branch,
+- installs from the stable custom-domain endpoint,
 - writes `/tmp/cojira/COJIRA-BOOTSTRAP.md`,
-- clones or refreshes `/tmp/cojira`,
 - then uses the bootstrap guide as the only required source of truth.
+
+If you just want the shell command itself:
+
+```bash
+curl -fsSL https://cojira.notabhay.xyz/install.sh | bash
+```
 
 ### Source build
 

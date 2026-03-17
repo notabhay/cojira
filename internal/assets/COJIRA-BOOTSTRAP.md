@@ -13,11 +13,9 @@ cojira bootstrap --output /tmp/cojira/COJIRA-BOOTSTRAP.md --force
 
 ## Canonical setup prompt
 
-For a clean agent session, use this exact one-line prompt shape:
+For a clean agent session, use this exact prompt:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/notabhay/cojira/beta/install.sh | bash && git clone --branch beta https://github.com/notabhay/cojira.git /tmp/cojira 2>/dev/null || git -C /tmp/cojira pull && follow /tmp/cojira/COJIRA-BOOTSTRAP.md
-```
+hey, run `curl -fsSL https://cojira.notabhay.xyz/install.sh | bash` and then follow the instructions in `/tmp/cojira/COJIRA-BOOTSTRAP.md`
 
 ## What cojira is for
 
@@ -45,13 +43,19 @@ If `setup_needed` is `true`, either:
 
 ### Curl install
 
-The canonical prompt above uses the beta-branch installer.
+The canonical prompt above uses the custom-domain installer endpoint.
 By default it:
 
-- downloads source for the `beta` branch,
+- redirects to the `beta` branch installer,
 - ensures a local Go toolchain is available if `go` is missing,
 - builds `cojira` into `${COJIRA_INSTALL_DIR:-${GOBIN:-$HOME/.local/bin}}/cojira`,
 - writes `COJIRA-BOOTSTRAP.md` to `/tmp/cojira/COJIRA-BOOTSTRAP.md`.
+
+The actual shell command is:
+
+```bash
+curl -fsSL https://cojira.notabhay.xyz/install.sh | bash
+```
 
 ### Optional installer overrides
 

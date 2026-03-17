@@ -25,6 +25,7 @@ It is not trying to be every Atlassian integration under the sun; it is trying t
 | --- | --- |
 | [`main.go`](main.go) | Root command assembly, dotenv bootstrap, top-level registration, and exit handling |
 | [`install.sh`](install.sh) | Curl installer that downloads source, ensures Go exists, builds the binary, and emits bootstrap assets |
+| [`deploy/vercel/cojira-installer`](deploy/vercel/cojira-installer) | Minimal Vercel deployment that serves `cojira.notabhay.xyz/install.sh` as a stable public installer endpoint |
 | [`internal/cli`](internal/cli) | Shared Cobra helpers, root alias expansion, output-mode normalization, retry flags, idempotency flags |
 | [`internal/meta`](internal/meta) | Meta commands: `describe`, `doctor`, `init`, `bootstrap`, `plan`, `do` |
 | [`internal/jira`](internal/jira) | Jira client, identifier handling, JQL helpers, command handlers, and sync flows |
@@ -87,6 +88,11 @@ Be explicit and test it.
 The bootstrap markdown is not ancillary documentation.
 It is how other coding agents learn how to use `cojira` from a clean workspace.
 
+### The custom installer URL is part of the product contract
+
+`https://cojira.notabhay.xyz/install.sh` is the public install endpoint.
+It should stay stable even if the underlying installer source continues to live on the GitHub `beta` branch.
+
 ### Resumable mutation state matters
 
 For multi-item mutation flows, a safe retry story is more important than a clever happy path.
@@ -120,8 +126,15 @@ Related assets:
 
 - [`.env.example`](.env.example): checked-in repo template
 - [`internal/assets/env.example`](internal/assets/env.example): template emitted by `cojira bootstrap`
+- [`deploy/vercel/cojira-installer/vercel.json`](deploy/vercel/cojira-installer/vercel.json): redirect config for the public installer URL
 
 Keep those aligned in intent and defaults.
+
+The tracked Vercel deployment is intentionally simple:
+
+- `/install.sh` redirects to the current `beta` branch installer on GitHub,
+- the public prompt can stay stable at `cojira.notabhay.xyz`,
+- installer changes in `install.sh` take effect without editing the Vercel deployment config.
 
 ## How To Add or Change a Command
 
@@ -197,7 +210,8 @@ A command change is incomplete until you update:
 ## Release and Installer Notes
 
 - `install.sh` is a first-class distribution surface, not an internal convenience script.
-- The beta-branch curl install path should keep working without additional environment variables.
+- The `cojira.notabhay.xyz/install.sh` curl path should keep working without additional environment variables.
+- If the public installer URL changes, update `AGENTS.md`, `README.md`, `COJIRA-BOOTSTRAP.md`, the embedded bootstrap copy, and the Vercel redirect config together.
 - If you change installer defaults, bootstrap output paths, or embedded assets, treat that as a user-facing change and document it.
 
 ## Before You Commit
