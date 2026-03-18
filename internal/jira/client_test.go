@@ -251,7 +251,7 @@ func TestCreateIssue(t *testing.T) {
 	c := testClient(t, server)
 	result, err := c.CreateIssue(map[string]any{
 		"fields": map[string]any{"summary": "New issue", "project": map[string]any{"key": "PROJ"}},
-	})
+	}, true)
 	require.NoError(t, err)
 	assert.Equal(t, "PROJ-999", result["key"])
 }

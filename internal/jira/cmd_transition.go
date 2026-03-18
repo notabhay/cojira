@@ -11,6 +11,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type transitionStoredResult struct {
+	Issue        string `json:"issue,omitempty"`
+	TransitionID string `json:"transition_id,omitempty"`
+	FromStatus   string `json:"from_status,omitempty"`
+	ToStatus     string `json:"to_status,omitempty"`
+	Receipt      string `json:"receipt,omitempty"`
+}
+
 // NewTransitionCmd creates the "transition" subcommand.
 func NewTransitionCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -32,6 +40,9 @@ func NewTransitionCmd() *cobra.Command {
 func runTransition(cmd *cobra.Command, args []string) error {
 	mode := cli.NormalizeOutputMode(cmd)
 	cli.ApplyPlanFlag(cmd)
+	if mode == "key" && !cli.SupportsKeyOutput(cmd) {
+		return cli.KeyModeUnsupportedError(cmd)
+	}
 	client, err := clientFromCmd(cmd)
 	if err != nil {
 		return err
@@ -201,6 +212,10 @@ func runTransition(cmd *cobra.Command, args []string) error {
 				warnings, nil, "", "", "", nil,
 			))
 		}
+		if mode == "key" {
+			_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Dry-run: no transition result is available to emit.")
+			return nil
+		}
 		if mode == "summary" {
 			fmt.Printf("Would transition %s: %s -> %s.\n", issueID, fromStatus, toDisplay)
 			return nil
@@ -212,12 +227,29 @@ func runTransition(cmd *cobra.Command, args []string) error {
 	}
 
 	if idemKey != "" {
-		if idempotency.IsDuplicate(idemKey) {
+		var stored transitionStoredResult
+		found, loadErr := idempotency.LoadValue(idemKey, &stored)
+		if loadErr != nil {
+			return loadErr
+		}
+		if found {
+			if stored.Issue != "" && mode == "key" {
+				fmt.Println(stored.Issue)
+				return nil
+			}
 			if mode == "json" {
 				return output.PrintJSON(output.BuildEnvelope(
 					true, "jira", "transition",
 					map[string]any{"issue": issueID},
-					map[string]any{"skipped": true, "reason": "idempotency_key_already_used"},
+					map[string]any{
+						"skipped":       true,
+						"reason":        "idempotency_key_already_used",
+						"issue":         firstNonEmpty(stored.Issue, issueID),
+						"from_status":   stored.FromStatus,
+						"to_status":     stored.ToStatus,
+						"transition_id": stored.TransitionID,
+						"receipt":       stored.Receipt,
+					},
 					nil, nil, "", "", "", nil,
 				))
 			}
@@ -228,16 +260,6 @@ func runTransition(cmd *cobra.Command, args []string) error {
 
 	if err := client.TransitionIssue(issueID, payload, !noNotify); err != nil {
 		return err
-	}
-
-	if idemKey != "" {
-		if recErr := idempotency.Record(idemKey, fmt.Sprintf("jira.transition %s", issueID)); recErr != nil {
-			warnMsg := fmt.Sprintf("Transition succeeded, but the idempotency key could not be saved: %v", recErr)
-			warnings = append(warnings, warnMsg)
-			if mode != "json" && mode != "summary" {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
-			}
-		}
 	}
 
 	issue2, err := client.GetIssue(issueID, "status", "")
@@ -251,6 +273,23 @@ func runTransition(cmd *cobra.Command, args []string) error {
 		OK:      true,
 		Message: fmt.Sprintf("Transitioned %s: %s -> %s (transition %s)", issueID, fromStatus, newStatus, transitionID),
 		Changes: []output.Change{{Field: "status", OldValue: fromStatus, NewValue: newStatus}},
+	}
+	stored := transitionStoredResult{
+		Issue:        issueID,
+		TransitionID: transitionID,
+		FromStatus:   fromStatus,
+		ToStatus:     newStatus,
+		Receipt:      receipt.Format(),
+	}
+
+	if idemKey != "" {
+		if recErr := idempotency.RecordKindValue(idemKey, "result", fmt.Sprintf("jira.transition %s", issueID), stored); recErr != nil {
+			warnMsg := fmt.Sprintf("Transition succeeded, but the idempotency key could not be saved: %v", recErr)
+			warnings = append(warnings, warnMsg)
+			if mode != "json" && mode != "summary" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "Warning:", warnMsg)
+			}
+		}
 	}
 
 	if mode == "json" {
@@ -266,6 +305,10 @@ func runTransition(cmd *cobra.Command, args []string) error {
 			},
 			warnings, nil, "", "", "", nil,
 		))
+	}
+	if mode == "key" {
+		fmt.Println(issueID)
+		return nil
 	}
 	if mode == "summary" {
 		fmt.Printf("Transitioned %s: %s -> %s.\n", issueID, fromStatus, newStatus)

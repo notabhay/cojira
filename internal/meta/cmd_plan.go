@@ -5,6 +5,7 @@ package meta
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -18,7 +19,7 @@ func NewPlanCmd(rootCmd *cobra.Command) *cobra.Command {
 		Long:  "Preview a cojira command without applying changes. Equivalent to adding --dry-run --diff.",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			planned := injectPlan(args)
+			planned := injectPlan(rootCmd, args)
 			if len(planned) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: Provide a command to plan.")
 				return &exitError{Code: 2}
@@ -35,7 +36,7 @@ func NewPlanCmd(rootCmd *cobra.Command) *cobra.Command {
 
 // injectPlan inserts --plan after the first subcommand argument
 // unless a plan/dry-run/preview/diff flag is already present.
-func injectPlan(args []string) []string {
+func injectPlan(rootCmd *cobra.Command, args []string) []string {
 	if len(args) == 0 {
 		return args
 	}
@@ -52,11 +53,46 @@ func injectPlan(args []string) []string {
 			return args
 		}
 	}
-	// Insert --plan after the first arg (the subcommand name).
+
+	insertAt := 0
+	current := rootCmd
+	for i, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
+		next := findSubcommand(current, arg)
+		if next == nil {
+			break
+		}
+		current = next
+		insertAt = i + 1
+	}
+	if insertAt == 0 {
+		insertAt = len(args)
+	}
+
 	result := make([]string, 0, len(args)+1)
-	result = append(result, args[0], "--plan")
-	result = append(result, args[1:]...)
+	result = append(result, args[:insertAt]...)
+	result = append(result, "--plan")
+	result = append(result, args[insertAt:]...)
 	return result
+}
+
+func findSubcommand(cmd *cobra.Command, name string) *cobra.Command {
+	for _, sub := range cmd.Commands() {
+		if sub.Name() == name {
+			return sub
+		}
+		for _, alias := range sub.Aliases {
+			if alias == name {
+				return sub
+			}
+		}
+	}
+	return nil
 }
 
 // exitError is a simple error that carries an exit code.

@@ -4,25 +4,37 @@ package cli
 
 import (
 	"os"
+	"strings"
 
+	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 )
 
-func resolveOutputMode(cmd *cobra.Command) string {
+var supportedOutputModes = map[string]bool{
+	"human":   true,
+	"json":    true,
+	"summary": true,
+	"auto":    true,
+	"key":     true,
+}
+
+func resolveRequestedOutputMode(cmd *cobra.Command) string {
 	mode, _ := cmd.Flags().GetString("output-mode")
 	if mode == "" {
 		mode = output.GetMode()
 	}
+	return mode
+}
+
+func resolveOutputMode(cmd *cobra.Command) string {
+	mode := resolveRequestedOutputMode(cmd)
 	if mode == "auto" {
 		if output.IsTTY(int(os.Stdout.Fd())) {
 			mode = "human"
 		} else {
 			mode = "json"
 		}
-	}
-	if mode != "human" && mode != "json" && mode != "summary" {
-		mode = "human"
 	}
 	return mode
 }
@@ -33,7 +45,7 @@ func AddOutputFlags(cmd *cobra.Command, includeQuiet bool) {
 	if defaultMode == "" {
 		defaultMode = "human"
 	}
-	cmd.Flags().String("output-mode", defaultMode, "Output mode: human, json, summary, auto (default: human)")
+	cmd.Flags().String("output-mode", defaultMode, "Output mode: human, json, summary, auto, key (default: human; key is command-specific)")
 	if includeQuiet {
 		cmd.Flags().Bool("quiet", false, "Suppress receipts/progress output (best-effort)")
 	}
@@ -52,6 +64,41 @@ func AddHTTPRetryFlags(cmd *cobra.Command) {
 // AddIdempotencyFlags registers --idempotency-key on cmd.
 func AddIdempotencyFlags(cmd *cobra.Command) {
 	cmd.Flags().String("idempotency-key", "", "Idempotency key for deduplication on retry. Skips if already completed.")
+}
+
+// ValidateOutputMode verifies that the requested output mode is supported.
+func ValidateOutputMode(cmd *cobra.Command) error {
+	mode := strings.TrimSpace(resolveRequestedOutputMode(cmd))
+	if mode == "" {
+		return nil
+	}
+	if supportedOutputModes[mode] {
+		return nil
+	}
+	return &cerrors.CojiraError{
+		Code:     cerrors.Unsupported,
+		Message:  "Unsupported output mode: " + mode + ". Use one of: human, json, summary, auto, key.",
+		ExitCode: 2,
+	}
+}
+
+// SupportsKeyOutput reports whether the resolved leaf command supports key-mode output.
+func SupportsKeyOutput(cmd *cobra.Command) bool {
+	switch strings.TrimSpace(cmd.CommandPath()) {
+	case "cojira jira create", "cojira jira clone", "cojira jira transition", "cojira jira bulk-transition", "create", "clone", "transition", "bulk-transition":
+		return true
+	default:
+		return false
+	}
+}
+
+// KeyModeUnsupportedError returns a consistent error for commands that do not support key-mode output.
+func KeyModeUnsupportedError(cmd *cobra.Command) error {
+	return &cerrors.CojiraError{
+		Code:     cerrors.Unsupported,
+		Message:  "--output-mode key is not supported by " + strings.TrimSpace(cmd.CommandPath()) + ". Supported commands: cojira jira create, cojira jira clone, cojira jira transition, cojira jira bulk-transition.",
+		ExitCode: 2,
+	}
 }
 
 // NormalizeOutputMode reads --output-mode from cmd, resolves "auto" to

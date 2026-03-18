@@ -144,6 +144,26 @@ func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
+// RestBaseURL returns the full Jira REST API base URL.
+func (c *Client) RestBaseURL() string {
+	return c.restBase
+}
+
+// AgileBaseURL returns the full Jira Agile REST API base URL.
+func (c *Client) AgileBaseURL() string {
+	return c.baseURL + AgileBase
+}
+
+// GreenhopperBaseURL returns the full Jira GreenHopper REST API base URL.
+func (c *Client) GreenhopperBaseURL() string {
+	return c.baseURL + GreenhopperBase
+}
+
+// UsesBasicAuth reports whether the client is configured to authenticate with HTTP basic auth.
+func (c *Client) UsesBasicAuth() bool {
+	return c.auth != nil
+}
+
 func (c *Client) formatError(resp *http.Response) string {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil || len(body) == 0 {
@@ -416,12 +436,14 @@ func (c *Client) ListTransitions(issue string) (map[string]any, error) {
 }
 
 // CreateIssue creates a new Jira issue.
-func (c *Client) CreateIssue(payload map[string]any) (map[string]any, error) {
+func (c *Client) CreateIssue(payload map[string]any, notifyUsers bool) (map[string]any, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.Request("POST", "/issue", body, nil)
+	params := url.Values{}
+	params.Set("notifyUsers", fmt.Sprintf("%t", notifyUsers))
+	resp, err := c.Request("POST", "/issue", body, params)
 	if err != nil {
 		return nil, err
 	}

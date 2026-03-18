@@ -99,6 +99,44 @@ func parseSwimlaneID(raw string) (int, error) {
 	return n, nil
 }
 
+func validateSwimlaneMoveFlags(first bool, after string) error {
+	after = strings.TrimSpace(after)
+	if first && after != "" {
+		return &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  "--first and --after are mutually exclusive.",
+			ExitCode: 2,
+		}
+	}
+	if !first && after == "" {
+		return &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  "Provide either --first (move to top) or --after <swimlane-id> (move after a specific lane).",
+			ExitCode: 2,
+		}
+	}
+	return nil
+}
+
+func allNonDefaultSwimlaneQueriesEmpty(lanes []Swimlane) bool {
+	if len(lanes) == 0 {
+		return false
+	}
+	for _, lane := range lanes {
+		if strings.TrimSpace(stripJQLOrderBy(lane.Query)) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func newRoutingSummary(issueCount, defaultAssigned int, warning string) map[string]any {
+	return map[string]any{
+		"all_default": defaultAssigned == issueCount,
+		"warning":     warning,
+	}
+}
+
 func greenhopperURL(baseURL, path string) string {
 	base := strings.TrimRight(baseURL, "/")
 	rel := strings.TrimLeft(path, "/")
@@ -1196,13 +1234,24 @@ func newSwimlanesMoveCmd(clientFn func(cmd *cobra.Command) (*jira.Client, error)
 			if err != nil {
 				return err
 			}
+			first, _ := cmd.Flags().GetBool("first")
+			after, _ := cmd.Flags().GetString("after")
+			if err := validateSwimlaneMoveFlags(first, after); err != nil {
+				return err
+			}
+
+			var afterID int
+			if !first {
+				afterID, err = parseSwimlaneID(after)
+				if err != nil {
+					return err
+				}
+			}
+
 			client, err := clientFn(cmd)
 			if err != nil {
 				return err
 			}
-
-			first, _ := cmd.Flags().GetBool("first")
-			after, _ := cmd.Flags().GetString("after")
 
 			var payload map[string]any
 			var msg string
@@ -1210,10 +1259,6 @@ func newSwimlanesMoveCmd(clientFn func(cmd *cobra.Command) (*jira.Client, error)
 				payload = map[string]any{"position": "First"}
 				msg = fmt.Sprintf("Move swimlane %d to first on board %s", laneID, boardID)
 			} else {
-				afterID, err := parseSwimlaneID(after)
-				if err != nil {
-					return err
-				}
 				afterURI := ghSwimlaneURL(client, boardID, &afterID)
 				payload = map[string]any{"after": afterURI}
 				msg = fmt.Sprintf("Move swimlane %d after %d on board %s", laneID, afterID, boardID)
@@ -1473,7 +1518,12 @@ func newSwimlanesSimulateCmd(clientFn func(cmd *cobra.Command) (*jira.Client, er
 			lanes := cfg.Swimlanes
 			if len(lanes) == 0 {
 				if mode == "json" {
-					result := map[string]any{"lanes": []any{}, "issues": []any{}, "summary": map[string]any{"total_issues": 0}}
+					result := map[string]any{
+						"lanes":           []any{},
+						"issues":          []any{},
+						"summary":         map[string]any{"total_issues": 0},
+						"routing_summary": newRoutingSummary(0, 0, ""),
+					}
 					emitEnvelope(true, "board-swimlanes simulate", map[string]any{"board": boardID}, result, nil, nil)
 					return nil
 				}
@@ -1548,6 +1598,90 @@ func newSwimlanesSimulateCmd(clientFn func(cmd *cobra.Command) (*jira.Client, er
 				} else {
 					nonDefaultLanes = append(nonDefaultLanes, lanes[i])
 				}
+			}
+
+			defaultName := "(default)"
+			if defaultLane != nil {
+				defaultName = defaultLane.Name
+			}
+
+			if allNonDefaultSwimlaneQueriesEmpty(nonDefaultLanes) {
+				warningMsg := "All non-default swimlanes have empty JQL. All issues route to the default swimlane."
+				lanesSummary := make([]map[string]any, 0, len(lanes))
+				for _, lane := range lanes {
+					assigned := 0
+					if lane.IsDefault {
+						assigned = len(issueKeys)
+					}
+					lanesSummary = append(lanesSummary, map[string]any{
+						"id": lane.ID, "name": lane.Name, "isDefault": lane.IsDefault, "assigned": assigned,
+					})
+				}
+
+				issuesOut := make([]map[string]any, 0, len(boardIssues))
+				for _, issue := range boardIssues {
+					key, _ := issue["key"].(string)
+					if key == "" {
+						continue
+					}
+					issuesOut = append(issuesOut, map[string]any{
+						"key":              key,
+						"assignedSwimlane": defaultName,
+						"matches":          []string{},
+						"ambiguous":        false,
+					})
+				}
+
+				summaryMap := map[string]any{
+					"total_issues":     len(issueKeys),
+					"board_total":      total,
+					"truncated":        truncated,
+					"maxIssues":        maxIssues,
+					"ambiguous":        0,
+					"no_match":         len(issueKeys),
+					"default_assigned": len(issueKeys),
+					"lane_errors":      0,
+				}
+				routingSummary := newRoutingSummary(len(issueKeys), len(issueKeys), warningMsg)
+
+				if mode == "json" {
+					result := map[string]any{
+						"lanes":           lanesSummary,
+						"issues":          issuesOut,
+						"ambiguous":       []any{},
+						"noMatch":         issueKeys,
+						"laneErrors":      []any{},
+						"summary":         summaryMap,
+						"routing_summary": routingSummary,
+					}
+					emitEnvelope(true, "board-swimlanes simulate", map[string]any{"board": boardID}, result, []any{warningMsg}, nil)
+					return nil
+				}
+
+				if mode == "summary" {
+					if truncated {
+						fmt.Printf("Simulated swimlane routing for board %s: %d of %d issues, all default because all non-default swimlanes have empty JQL.\n",
+							boardID, len(issueKeys), total)
+					} else {
+						fmt.Printf("Simulated swimlane routing for board %s: %d issues, all default because all non-default swimlanes have empty JQL.\n",
+							boardID, len(issueKeys))
+					}
+					return nil
+				}
+
+				fmt.Printf("Board %s swimlane routing simulation:\n", boardID)
+				for _, lane := range lanesSummary {
+					defaultMark := ""
+					if lane["isDefault"] == true {
+						defaultMark = " (default)"
+					}
+					fmt.Printf("  - %s%s: %d issue(s)\n", lane["name"], defaultMark, lane["assigned"])
+				}
+				if truncated {
+					fmt.Printf("\nNote: simulated %d of %d issues (safety cap).\n", len(issueKeys), total)
+				}
+				fmt.Printf("\nWarning: %s\n", warningMsg)
+				return nil
 			}
 
 			laneMatches := make(map[string]map[string]bool)
@@ -1644,10 +1778,6 @@ func newSwimlanesSimulateCmd(clientFn func(cmd *cobra.Command) (*jira.Client, er
 					}
 				}
 			}
-			defaultName := "(default)"
-			if defaultLane != nil {
-				defaultName = defaultLane.Name
-			}
 			for _, key := range issueKeys {
 				if remaining[key] {
 					assignedLane[key] = defaultName
@@ -1712,6 +1842,7 @@ func newSwimlanesSimulateCmd(clientFn func(cmd *cobra.Command) (*jira.Client, er
 				"default_assigned": defaultAssigned,
 				"lane_errors":      len(laneErrors),
 			}
+			routingSummary := newRoutingSummary(len(issueKeys), defaultAssigned, "")
 
 			if mode == "json" {
 				ambiguousOut := make([]map[string]any, 0)
@@ -1719,12 +1850,13 @@ func newSwimlanesSimulateCmd(clientFn func(cmd *cobra.Command) (*jira.Client, er
 					ambiguousOut = append(ambiguousOut, map[string]any{"key": k, "matches": v})
 				}
 				result := map[string]any{
-					"lanes":      lanesSummary,
-					"issues":     issuesOut,
-					"ambiguous":  ambiguousOut,
-					"noMatch":    noMatch,
-					"laneErrors": laneErrors,
-					"summary":    summaryMap,
+					"lanes":           lanesSummary,
+					"issues":          issuesOut,
+					"ambiguous":       ambiguousOut,
+					"noMatch":         noMatch,
+					"laneErrors":      laneErrors,
+					"summary":         summaryMap,
+					"routing_summary": routingSummary,
 				}
 				emitEnvelope(true, "board-swimlanes simulate", map[string]any{"board": boardID}, result, nil, nil)
 				return nil

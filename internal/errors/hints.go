@@ -4,7 +4,7 @@ import "fmt"
 
 // HintSetup returns the hint for missing setup.
 func HintSetup() string {
-	return "Run 'cojira init' (interactive setup) or 'cojira bootstrap' (templates), or set env vars directly."
+	return "Run `cojira doctor` to diagnose setup, `cojira init` to configure credentials, or write the required env vars directly."
 }
 
 // HintTimeout returns the hint for timeout errors.

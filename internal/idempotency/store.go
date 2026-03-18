@@ -2,13 +2,31 @@ package idempotency
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
-const ttlSeconds = 3600 * 24 // 24 hours
+const (
+	defaultTTLSeconds    = 3600 * 24     // 24 hours
+	resultTTLSeconds     = 3600 * 24 * 7 // 7 days
+	checkpointTTLSeconds = 3600 * 24 * 7 // 7 days
+	planTTLSeconds       = 3600 * 24 * 7 // 7 days
+	captureTTLSeconds    = 3600 * 24 * 7 // 7 days
+)
+
+const (
+	kindDefault    = "default"
+	kindResult     = "result"
+	kindCheckpoint = "checkpoint"
+	kindPlan       = "plan"
+	kindCapture    = "capture"
+)
 
 func storeDir() string {
 	if dir := os.Getenv("COJIRA_IDEMPOTENCY_DIR"); dir != "" {
@@ -24,19 +42,45 @@ func storeDir() string {
 	return filepath.Join(home, ".cache", "cojira", "idempotency")
 }
 
-func storePath(key string) string {
-	return filepath.Join(storeDir(), key+".json")
+func storePath(key string) (string, error) {
+	trimmed := strings.TrimSpace(key)
+	if trimmed == "" {
+		return "", fmt.Errorf("idempotency key cannot be empty")
+	}
+	sum := sha256.Sum256([]byte(trimmed))
+	name := hex.EncodeToString(sum[:]) + ".json"
+	return filepath.Join(storeDir(), name), nil
+}
+
+func ttlForKind(kind string) int {
+	switch kind {
+	case kindResult:
+		return resultTTLSeconds
+	case kindCheckpoint:
+		return checkpointTTLSeconds
+	case kindPlan:
+		return planTTLSeconds
+	case kindCapture:
+		return captureTTLSeconds
+	default:
+		return defaultTTLSeconds
+	}
 }
 
 type entry struct {
 	Key         string  `json:"key"`
+	Kind        string  `json:"kind,omitempty"`
 	Description string  `json:"description,omitempty"`
 	Timestamp   float64 `json:"timestamp"`
+	TTLSeconds  int     `json:"ttl_seconds,omitempty"`
 	Value       []byte  `json:"value,omitempty"`
 }
 
 func loadEntry(key string) (*entry, error) {
-	path := storePath(key)
+	path, err := storePath(key)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -45,7 +89,11 @@ func loadEntry(key string) (*entry, error) {
 	if err := json.Unmarshal(data, &e); err != nil {
 		return nil, err
 	}
-	if time.Now().Unix()-int64(e.Timestamp) >= ttlSeconds {
+	ttl := e.TTLSeconds
+	if ttl <= 0 {
+		ttl = ttlForKind(e.Kind)
+	}
+	if time.Now().Unix()-int64(e.Timestamp) >= int64(ttl) {
 		return nil, os.ErrNotExist
 	}
 	return &e, nil
@@ -59,14 +107,29 @@ func IsDuplicate(key string) bool {
 
 // Record records a completed operation for the given key.
 func Record(key string, description string) error {
-	return RecordValue(key, description, nil)
+	return RecordKindValue(key, kindDefault, description, nil)
 }
 
 // RecordValue records a completed operation for the given key together with
 // optional structured value data that can be loaded on resume.
 func RecordValue(key string, description string, value any) error {
+	return RecordKindValue(key, kindDefault, description, value)
+}
+
+// RecordKind records a completed operation for the given key and kind.
+func RecordKind(key string, kind string, description string) error {
+	return RecordKindValue(key, kind, description, nil)
+}
+
+// RecordKindValue records a completed operation for the given key and kind together with
+// optional structured value data that can be loaded on resume.
+func RecordKindValue(key string, kind string, description string, value any) error {
 	dir := storeDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	path, err := storePath(key)
+	if err != nil {
 		return err
 	}
 	var raw []byte
@@ -79,15 +142,17 @@ func RecordValue(key string, description string, value any) error {
 	}
 	e := entry{
 		Key:         key,
+		Kind:        kind,
 		Description: description,
 		Timestamp:   float64(time.Now().Unix()),
+		TTLSeconds:  ttlForKind(kind),
 		Value:       raw,
 	}
 	data, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(storePath(key), data, 0o600)
+	return os.WriteFile(path, data, 0o600)
 }
 
 // LoadValue loads structured value data previously recorded for key. It
@@ -161,7 +226,11 @@ func ClearStore() int {
 			count++
 			continue
 		}
-		if now-int64(e.Timestamp) >= ttlSeconds {
+		ttl := e.TTLSeconds
+		if ttl <= 0 {
+			ttl = ttlForKind(e.Kind)
+		}
+		if now-int64(e.Timestamp) >= int64(ttl) {
 			_ = os.Remove(path)
 			count++
 		}

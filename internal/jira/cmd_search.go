@@ -44,6 +44,14 @@ func runSearch(cmd *cobra.Command, args []string) error {
 
 	data, err := client.Search(jql, limit, start, fields, expand)
 	if err != nil {
+		if mode == "json" {
+			errObj, _ := output.ErrorObj(errorCode(err, "SEARCH_FAILED"), err.Error(), "", "", nil)
+			return output.PrintJSON(output.BuildEnvelope(
+				false, "jira", "search",
+				map[string]any{"jql": jql, "start": start, "limit": limit},
+				nil, nil, []any{errObj}, "", "", "", nil,
+			))
+		}
 		return err
 	}
 
@@ -58,7 +66,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 			return output.PrintJSON(output.BuildEnvelope(
 				true, "jira", "search",
 				map[string]any{"jql": jql},
-				map[string]any{"saved_to": outputFile, "total": intFromAny(data["total"], len(issues))},
+				map[string]any{"schema": "jira.search.saved/v1", "saved_to": outputFile, "total": intFromAny(data["total"], len(issues))},
 				nil, nil, "", "", "", nil,
 			))
 		}
@@ -71,10 +79,12 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	}
 
 	if mode == "json" {
+		result := deepCopyMap(data)
+		result["schema"] = "jira.search/v1"
 		return output.PrintJSON(output.BuildEnvelope(
 			true, "jira", "search",
 			map[string]any{"jql": jql, "start": start, "limit": limit},
-			data, nil, nil, "", "", "", nil,
+			result, nil, nil, "", "", "", nil,
 		))
 	}
 

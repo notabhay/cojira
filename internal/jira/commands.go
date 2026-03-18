@@ -26,6 +26,7 @@ func NewJiraCmd() *cobra.Command {
 		NewInfoCmd(),
 		NewGetCmd(),
 		NewRawCmd(),
+		NewRawInternalCmd(),
 		NewDeleteCmd(),
 		NewUpdateCmd(),
 		NewTransitionCmd(),
@@ -33,6 +34,7 @@ func NewJiraCmd() *cobra.Command {
 		NewSearchCmd(),
 		NewBoardIssuesCmd(),
 		NewCreateCmd(),
+		NewCloneCmd(),
 		NewFieldsCmd(),
 		NewValidateCmd(),
 		NewWhoamiCmd(),
@@ -42,6 +44,7 @@ func NewJiraCmd() *cobra.Command {
 		NewBulkUpdateSummariesCmd(),
 		NewSyncCmd(),
 		NewSyncFromDirCmd(),
+		NewDevelopmentCmd(),
 	)
 
 	return cmd

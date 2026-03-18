@@ -1,11 +1,7 @@
 package jira
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -29,6 +25,7 @@ type jiraBatchPlanOp struct {
 	Target      map[string]any `json:"target,omitempty"`
 	Payload     map[string]any `json:"payload,omitempty"`
 	Notify      bool           `json:"notify,omitempty"`
+	Capture     string         `json:"capture,omitempty"`
 }
 
 // NewBatchCmd creates the "batch" subcommand.
@@ -43,6 +40,7 @@ func NewBatchCmd() *cobra.Command {
 	cmd.Flags().Bool("stdin", false, "Read operations as newline-delimited JSON from stdin")
 	cmd.Flags().Bool("dry-run", false, "Preview without changes")
 	cmd.Flags().Bool("plan", false, "Alias for --dry-run")
+	cmd.Flags().Bool("freeze-plan", false, "Persist the resolved batch plan during dry-run so it can be applied or resumed later")
 	cmd.Flags().Float64("sleep", 0.0, "Delay between operations in seconds")
 	cli.AddOutputFlags(cmd, true)
 	cli.AddIdempotencyFlags(cmd)
@@ -59,6 +57,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 
 	useStdin, _ := cmd.Flags().GetBool("stdin")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	freezePlan, _ := cmd.Flags().GetBool("freeze-plan")
 	sleepSec, _ := cmd.Flags().GetFloat64("sleep")
 	idemKey, _ := cmd.Flags().GetString("idempotency-key")
 	quiet, _ := cmd.Flags().GetBool("quiet")
@@ -73,7 +72,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	}
 
 	reqID := output.RequestID()
-	plan, idemKey, target, err := resolveJiraBatchPlan(client, useStdin, configFile, dryRun, idemKey)
+	plan, idemKey, target, err := resolveJiraBatchPlan(client, useStdin, configFile, dryRun, freezePlan, idemKey)
 	if err != nil {
 		return err
 	}
@@ -128,6 +127,21 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	var failures []failureEntry
 	var completed []idempotency.ResumeItem
 	var remaining []idempotency.ResumeItem
+	vars := map[string]string{}
+
+	for _, op := range plan.Operations {
+		if op.Capture == "" {
+			continue
+		}
+		var captured string
+		found, err := idempotency.LoadValue(batchCaptureStoreKey(idemKey, op.ID, op.Capture), &captured)
+		if err != nil {
+			return err
+		}
+		if found && strings.TrimSpace(captured) != "" {
+			vars[op.Capture] = captured
+		}
+	}
 
 	for idx, op := range plan.Operations {
 		item := map[string]any{
@@ -157,10 +171,12 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		var opErr error
 		switch op.Op {
 		case "update":
-			issueID, _ := op.Target["issue"].(string)
+			rawIssueID, _ := op.Target["issue"].(string)
+			issueID := ResolveIssueIdentifier(substituteVarsString(rawIssueID, vars))
+			effectivePayload := substituteVars(op.Payload, vars)
 			if dryRun {
 				fieldKeys := make([]string, 0)
-				if flds, ok := op.Payload["fields"].(map[string]any); ok {
+				if flds, ok := effectivePayload["fields"].(map[string]any); ok {
 					for k := range flds {
 						fieldKeys = append(fieldKeys, k)
 					}
@@ -169,27 +185,57 @@ func runBatch(cmd *cobra.Command, args []string) error {
 				if e != nil {
 					opErr = e
 				} else {
-					item["diffs"] = previewPayloadDiff(issueID, issue, op.Payload, mode == "json" || quiet)
+					item["diffs"] = previewPayloadDiff(issueID, issue, effectivePayload, mode == "json" || quiet)
 				}
-			} else if e := client.UpdateIssue(issueID, op.Payload, op.Notify); e != nil {
+			} else if e := client.UpdateIssue(issueID, effectivePayload, op.Notify); e != nil {
 				opErr = e
 			}
 
 		case "transition":
-			issueID, _ := op.Target["issue"].(string)
+			rawIssueID, _ := op.Target["issue"].(string)
+			issueID := ResolveIssueIdentifier(substituteVarsString(rawIssueID, vars))
+			effectivePayload := substituteVars(op.Payload, vars)
 			if !dryRun {
-				if e := client.TransitionIssue(issueID, op.Payload, op.Notify); e != nil {
+				if e := client.TransitionIssue(issueID, effectivePayload, op.Notify); e != nil {
 					opErr = e
 				}
 			}
 
 		case "create":
+			effectivePayload := substituteVars(op.Payload, vars)
 			if !dryRun {
-				created, e := client.CreateIssue(op.Payload)
+				created, e := client.CreateIssue(effectivePayload, op.Notify)
 				if e != nil {
 					opErr = e
 				} else {
 					item["result"] = created
+					if op.Capture != "" {
+						capturedKey := strings.TrimSpace(fmt.Sprintf("%v", created["key"]))
+						if capturedKey == "" {
+							opErr = &cerrors.CojiraError{
+								Code:     cerrors.CreateFailed,
+								Message:  fmt.Sprintf("Create operation %s did not return a key to capture into %s.", op.Description, op.Capture),
+								ExitCode: 1,
+							}
+						} else {
+							vars[op.Capture] = capturedKey
+							item["captured"] = map[string]any{"variable": op.Capture, "value": capturedKey}
+							if recErr := idempotency.RecordKindValue(batchCaptureStoreKey(idemKey, op.ID, op.Capture), "capture", "jira.batch capture", capturedKey); recErr != nil {
+								opErr = &cerrors.CojiraError{
+									Code:     cerrors.OpFailed,
+									Message:  fmt.Sprintf("%s succeeded, but the capture value could not be saved: %v", op.Description, recErr),
+									ExitCode: 1,
+								}
+								item["capture_error"] = recErr.Error()
+							}
+						}
+					}
+				}
+			} else {
+				item["dry_run"] = true
+				item["payload"] = effectivePayload
+				if op.Capture != "" {
+					item["capture"] = map[string]any{"variable": op.Capture}
 				}
 			}
 
@@ -198,7 +244,14 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		}
 
 		if opErr == nil && !dryRun {
-			if recErr := idempotency.RecordValue(opKey, op.Description, op.Target); recErr != nil {
+			checkpointValue := map[string]any{"target": op.Target}
+			if resultValue, ok := item["result"]; ok {
+				checkpointValue["result"] = resultValue
+			}
+			if capturedValue, ok := item["captured"]; ok {
+				checkpointValue["captured"] = capturedValue
+			}
+			if recErr := idempotency.RecordKindValue(opKey, "checkpoint", op.Description, checkpointValue); recErr != nil {
 				opErr = &cerrors.CojiraError{
 					Code:     cerrors.OpFailed,
 					Message:  fmt.Sprintf("%s succeeded, but the resume checkpoint could not be saved: %v", op.Description, recErr),
@@ -315,171 +368,6 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		return &cerrors.CojiraError{ExitCode: 1}
 	}
 	return nil
-}
-
-func resolveJiraBatchPlan(client *Client, useStdin bool, configFile string, dryRun bool, requestedKey string) (jiraBatchPlan, string, map[string]any, error) {
-	if requestedKey != "" {
-		var stored jiraBatchPlan
-		found, err := idempotency.LoadValue(requestedKey+".plan", &stored)
-		if err != nil {
-			return jiraBatchPlan{}, "", nil, err
-		}
-		if found {
-			return stored, requestedKey, targetForBatchSource(stored.Source), nil
-		}
-	}
-
-	var operations []map[string]any
-	var basePath string
-	source := ""
-
-	if useStdin {
-		scanner := bufio.NewScanner(os.Stdin)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
-				continue
-			}
-			var op map[string]any
-			if err := json.Unmarshal([]byte(line), &op); err != nil {
-				return jiraBatchPlan{}, "", nil, &cerrors.CojiraError{Code: cerrors.InvalidJSON, Message: fmt.Sprintf("Invalid JSON on stdin: %v", err), ExitCode: 1}
-			}
-			operations = append(operations, op)
-		}
-		if err := scanner.Err(); err != nil {
-			return jiraBatchPlan{}, "", nil, err
-		}
-		basePath, _ = os.Getwd()
-		source = "stdin"
-	} else if configFile != "" {
-		data, err := os.ReadFile(configFile)
-		if err != nil {
-			return jiraBatchPlan{}, "", nil, &cerrors.CojiraError{Code: cerrors.FileNotFound, Message: fmt.Sprintf("Config file not found: %s", configFile), ExitCode: 1}
-		}
-		var config map[string]any
-		if err := json.Unmarshal(data, &config); err != nil {
-			return jiraBatchPlan{}, "", nil, &cerrors.CojiraError{Code: cerrors.InvalidJSON, Message: fmt.Sprintf("Invalid JSON in %s: %v", configFile, err), ExitCode: 1}
-		}
-		if ops, ok := config["operations"].([]any); ok {
-			for _, o := range ops {
-				if m, ok := o.(map[string]any); ok {
-					operations = append(operations, m)
-				}
-			}
-		}
-		if bd, ok := config["base_dir"].(string); ok && bd != "" {
-			if filepath.IsAbs(bd) {
-				basePath = bd
-			} else {
-				basePath = filepath.Join(filepath.Dir(configFile), bd)
-			}
-		} else {
-			basePath = filepath.Dir(configFile)
-		}
-		source = configFile
-	} else {
-		return jiraBatchPlan{}, "", nil, &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "Provide a config file, --stdin, or --idempotency-key for a saved resumable run.", ExitCode: 2}
-	}
-
-	planOps := make([]jiraBatchPlanOp, 0, len(operations))
-	for idx, op := range operations {
-		opType, _ := op["op"].(string)
-		opType = strings.ToLower(strings.TrimSpace(opType))
-		switch opType {
-		case "update":
-			issueVal, _ := op["issue"].(string)
-			issueID := ResolveIssueIdentifier(issueVal)
-			fileVal, _ := op["file"].(string)
-			payload, err := readJSONFile(filepath.Join(basePath, fileVal))
-			if err != nil {
-				return jiraBatchPlan{}, "", nil, err
-			}
-			planOps = append(planOps, jiraBatchPlanOp{
-				ID:          fmt.Sprintf("%04d-%s", idx, output.IdempotencyKey(opType, issueID, payload)[:12]),
-				Op:          opType,
-				Description: fmt.Sprintf("update %s from %s", issueID, fileVal),
-				Target:      map[string]any{"issue": issueID},
-				Payload:     payload,
-				Notify:      notifyValue(op, true),
-			})
-
-		case "transition":
-			issueVal, _ := op["issue"].(string)
-			issueID := ResolveIssueIdentifier(issueVal)
-			transition := fmt.Sprintf("%v", op["transition"])
-			payload := map[string]any{"transition": map[string]any{"id": transition}}
-			fileVal, _ := op["file"].(string)
-			if fileVal != "" {
-				extra, err := readJSONFile(filepath.Join(basePath, fileVal))
-				if err != nil {
-					return jiraBatchPlan{}, "", nil, err
-				}
-				for k, v := range extra {
-					payload[k] = v
-				}
-				payload["transition"] = map[string]any{"id": transition}
-			}
-			planOps = append(planOps, jiraBatchPlanOp{
-				ID:          fmt.Sprintf("%04d-%s", idx, output.IdempotencyKey(opType, issueID, payload)[:12]),
-				Op:          opType,
-				Description: fmt.Sprintf("transition %s using %s", issueID, transition),
-				Target:      map[string]any{"issue": issueID, "transition": transition},
-				Payload:     payload,
-				Notify:      notifyValue(op, true),
-			})
-
-		case "create":
-			fileVal, _ := op["file"].(string)
-			payload, err := readJSONFile(filepath.Join(basePath, fileVal))
-			if err != nil {
-				return jiraBatchPlan{}, "", nil, err
-			}
-			planOps = append(planOps, jiraBatchPlanOp{
-				ID:          fmt.Sprintf("%04d-%s", idx, output.IdempotencyKey(opType, payload)[:12]),
-				Op:          opType,
-				Description: fmt.Sprintf("create issue from %s", fileVal),
-				Target:      map[string]any{"file": fileVal},
-				Payload:     payload,
-				Notify:      true,
-			})
-
-		default:
-			return jiraBatchPlan{}, "", nil, &cerrors.CojiraError{Code: cerrors.OpFailed, Message: fmt.Sprintf("Unknown operation: %s", opType), ExitCode: 1}
-		}
-	}
-
-	plan := jiraBatchPlan{
-		Version:    1,
-		Source:     source,
-		Operations: planOps,
-	}
-
-	idemKey := requestedKey
-	if idemKey == "" {
-		idemKey = output.IdempotencyKey("jira.batch", plan)
-	}
-
-	var stored jiraBatchPlan
-	found, err := idempotency.LoadValue(idemKey+".plan", &stored)
-	if err != nil {
-		return jiraBatchPlan{}, "", nil, err
-	}
-	if found {
-		return stored, idemKey, targetForBatchSource(stored.Source), nil
-	}
-	if !dryRun {
-		if err := idempotency.RecordValue(idemKey+".plan", "jira.batch plan", plan); err != nil {
-			return jiraBatchPlan{}, "", nil, err
-		}
-	}
-	return plan, idemKey, targetForBatchSource(source), nil
-}
-
-func notifyValue(op map[string]any, fallback bool) bool {
-	if n, ok := op["notify"].(bool); ok {
-		return n
-	}
-	return fallback
 }
 
 func targetForBatchSource(source string) map[string]any {

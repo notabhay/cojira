@@ -38,6 +38,7 @@ func TestBootstrapWritesFiles(t *testing.T) {
 	// Check an example payload exists.
 	examplePayload := filepath.Join(tmpDir, "examples", "jira-create-payload.json")
 	assert.FileExists(t, examplePayload)
+	assert.FileExists(t, filepath.Join(tmpDir, "examples", "jira-create-template.json"))
 
 	// Idempotent: second run should succeed without overwriting.
 	cmd2 := NewBootstrapCmd()

@@ -141,6 +141,138 @@ func TestJiraCreateJSONIncludesPathContextOnMissingFile(t *testing.T) {
 	assert.NotEmpty(t, target["cwd"])
 }
 
+func TestJiraCreateInlineJSONCreatesIssue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/2/issue", r.URL.Path)
+		assert.Equal(t, "true", r.URL.Query().Get("notifyUsers"))
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		fields := payload["fields"].(map[string]any)
+		assert.Equal(t, "Inline issue", fields["summary"])
+		w.WriteHeader(201)
+		_ = json.NewEncoder(w).Encode(map[string]any{"key": "PROJ-777", "id": "10777"})
+	}))
+	defer server.Close()
+
+	t.Setenv("JIRA_BASE_URL", server.URL)
+	t.Setenv("JIRA_API_TOKEN", "token")
+
+	inline := `{"fields":{"project":{"key":"PROJ"},"issuetype":{"name":"Task"},"summary":"Inline issue"}}`
+	var payload map[string]any
+	require.NoError(t, executeJiraJSONCommand(t, NewCreateCmd(), []string{"--inline", inline, "--output-mode", "json"}, &payload))
+	result := payload["result"].(map[string]any)
+	assert.Equal(t, "PROJ-777", result["key"])
+}
+
+func TestJiraCreateKeyModePrintsCreatedKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(201)
+		_ = json.NewEncoder(w).Encode(map[string]any{"key": "PROJ-123", "id": "10123"})
+	}))
+	defer server.Close()
+
+	t.Setenv("JIRA_BASE_URL", server.URL)
+	t.Setenv("JIRA_API_TOKEN", "token")
+
+	inline := `{"fields":{"project":{"key":"PROJ"},"issuetype":{"name":"Task"},"summary":"Emit key"}}`
+	stdout, err := executeJiraCommand(t, NewCreateCmd(), []string{"--inline", inline, "--output-mode", "key"})
+	require.NoError(t, err)
+	assert.Equal(t, "PROJ-123\n", stdout)
+}
+
+func TestJiraCloneDryRunJSONBuildsPortablePayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/issue/PROJ-7", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":  "10007",
+			"key": "PROJ-7",
+			"fields": map[string]any{
+				"summary":     "Source summary",
+				"description": "Source description",
+				"project":     map[string]any{"key": "PROJ"},
+				"issuetype":   map[string]any{"name": "Task"},
+				"priority":    map[string]any{"name": "High"},
+				"labels":      []any{"one", "two"},
+				"components":  []any{map[string]any{"id": "10", "name": "API"}},
+				"status":      map[string]any{"name": "Done"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("JIRA_BASE_URL", server.URL)
+	t.Setenv("JIRA_API_TOKEN", "token")
+
+	var payload map[string]any
+	require.NoError(t, executeJiraJSONCommand(t, NewCloneCmd(), []string{"PROJ-7", "--dry-run", "--output-mode", "json"}, &payload))
+	result := payload["result"].(map[string]any)
+	clonedPayload := result["payload"].(map[string]any)
+	fields := clonedPayload["fields"].(map[string]any)
+	assert.Equal(t, "Source summary", fields["summary"])
+	assert.Nil(t, fields["status"])
+	assert.NotNil(t, fields["project"])
+}
+
+func TestJiraDevelopmentSummaryJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/rest/api/2/issue/PROJ-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":  "10001",
+				"key": "PROJ-1",
+				"fields": map[string]any{
+					"summary": "Development issue",
+				},
+			})
+		case "/rest/dev-status/1.0/issue/summary":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"summary": map[string]any{
+					"pullrequest": map[string]any{
+						"overall": map[string]any{"count": 1},
+						"byInstanceType": map[string]any{
+							"stash": map[string]any{"count": 1, "name": "Bitbucket"},
+						},
+					},
+					"repository": map[string]any{
+						"overall":        map[string]any{"count": 3},
+						"byInstanceType": map[string]any{"stash": map[string]any{"count": 3, "name": "Bitbucket"}},
+					},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	t.Setenv("JIRA_BASE_URL", server.URL)
+	t.Setenv("JIRA_API_TOKEN", "token")
+
+	var payload map[string]any
+	require.NoError(t, executeJiraJSONCommand(t, NewJiraCmd(), []string{"--experimental", "development", "summary", "PROJ-1", "--output-mode", "json"}, &payload))
+	result := payload["result"].(map[string]any)
+	counts := result["counts"].(map[string]any)
+	pulls := counts["pullrequest"].(map[string]any)
+	assert.Equal(t, float64(1), pulls["count"])
+}
+
+func TestJiraRawInternalDevStatusJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/dev-status/1.0/issue/summary", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"summary": map[string]any{"pullrequest": map[string]any{"overall": map[string]any{"count": 1}}}})
+	}))
+	defer server.Close()
+
+	t.Setenv("JIRA_BASE_URL", server.URL)
+	t.Setenv("JIRA_API_TOKEN", "token")
+
+	var payload map[string]any
+	require.NoError(t, executeJiraJSONCommand(t, NewJiraCmd(), []string{"--experimental", "raw-internal", "dev-status", "GET", "/issue/summary?issueId=10001", "--api-base", "1.0", "--output-mode", "json"}, &payload))
+	result := payload["result"].(map[string]any)
+	assert.NotNil(t, result["response"])
+}
+
 func executeJiraJSONCommand(t *testing.T, cmd *cobra.Command, args []string, out *map[string]any) error {
 	t.Helper()
 	output.SetMode("")
@@ -159,6 +291,24 @@ func executeJiraJSONCommand(t *testing.T, cmd *cobra.Command, args []string, out
 	require.NotEmpty(t, buf)
 	require.NoError(t, json.Unmarshal(buf, out))
 	return err
+}
+
+func executeJiraCommand(t *testing.T, cmd *cobra.Command, args []string) (string, error) {
+	t.Helper()
+	output.SetMode("")
+
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+	defer func() { os.Stdout = origStdout }()
+
+	cmd.SetArgs(args)
+	err = cmd.Execute()
+
+	_ = w.Close()
+	buf, _ := io.ReadAll(r)
+	return string(buf), err
 }
 
 func TestJiraRawRejectsAbsoluteURL(t *testing.T) {

@@ -26,11 +26,19 @@ var jiraRawAllowlist = []string{
 
 // NewRawCmd creates the "raw" passthrough subcommand.
 func NewRawCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:     "raw <method> <path>",
-		Aliases: []string{"api"},
-		Short:   "Send an authenticated Jira REST API request to an allowlisted path",
-		Long: `Send an authenticated Jira REST API request to an allowlisted Jira resource.
+		cmd := &cobra.Command{
+			Use:     "raw <method> <path>",
+			Aliases: []string{"api"},
+			Short:   "Send an authenticated Jira REST API request to an allowlisted path",
+			Long: `Send an authenticated Jira REST API request to an allowlisted Jira resource.
+
+Method comes first, then an API-relative path.
+
+Examples:
+  cojira jira raw GET /issue/PROJ-123
+  cojira jira raw GET /search?jql=project%20=%20PROJ
+
+Do not include /rest/api/2 in the path. Use /issue/PROJ-123, not /rest/api/2/issue/PROJ-123.
 
 Accepted API-relative prefixes:
   /issue

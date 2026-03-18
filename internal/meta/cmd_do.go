@@ -54,7 +54,7 @@ var intentRules = []intentRule{
 			return nil, fmt.Errorf("Priority updates need a Jira issue key or URL, for example: change priority for PROJ-123 to High")
 		}
 		value := strings.Trim(strings.TrimSpace(groups["value"]), `"'`)
-		return []string{"jira", "update", groups["ident"], "--set", "priority:=" + value, "--dry-run"}, nil
+		return []string{"jira", "update", groups["ident"], "--set", "priority=" + value, "--dry-run"}, nil
 	}),
 	compileIntentRule("transition-one", `(?i)^\s*(?:move|transition)\s+(?P<ident>`+identRe+`)\s+to\s+(?P<status>.+?)\s*$`, func(groups map[string]string) ([]string, error) {
 		status := strings.Trim(strings.TrimSpace(groups["status"]), `"'`)
@@ -95,8 +95,32 @@ var intentRules = []intentRule{
 		}
 		return []string{"jira", "board-issues", board, "--all", "--output-mode", "summary"}, nil
 	}),
+	compileIntentRule("create-issue-titled", `(?i)^\s*create\s+a\s+new\s+issue\s+in\s+(?P<project>[A-Za-z][A-Za-z0-9_]*)\s+(?:titled|called)\s+(?P<summary>.+?)\s*$`, func(groups map[string]string) ([]string, error) {
+		summary := strings.Trim(strings.TrimSpace(groups["summary"]), `"'`)
+		if summary == "" {
+			return nil, fmt.Errorf("Issue creation needs a summary, for example: create a new issue in PROJ titled Investigate login bug")
+		}
+		return []string{"jira", "create", "--project", groups["project"], "--type", "Task", "--summary", summary, "--dry-run"}, nil
+	}),
 	compileIntentRule("create-issue", `(?i)^\s*create\s+a\s+new\s+issue\s+in\s+(?P<project>[A-Za-z][A-Za-z0-9_]*)\s*$`, func(groups map[string]string) ([]string, error) {
-		return nil, fmt.Errorf("Issue creation needs a JSON payload file; use the direct create command once the payload is prepared for project %s", groups["project"])
+		return nil, fmt.Errorf("Issue creation now supports quick flags. Use a summary too, for example: create a new issue in %s titled Investigate login bug", groups["project"])
+	}),
+	compileIntentRule("clone-issue", `(?i)^\s*clone\s+(?P<ident>`+identRe+`)\s*$`, func(groups map[string]string) ([]string, error) {
+		return []string{"jira", "clone", groups["ident"], "--dry-run"}, nil
+	}),
+	compileIntentRule("development-summary", `(?i)^\s*(?:show|read)\s+(?:the\s+)?development\s+summary(?:\s+for\s+(?P<ident>`+identRe+`))?\s*$`, func(groups map[string]string) ([]string, error) {
+		ident := strings.TrimSpace(groups["ident"])
+		if ident == "" {
+			return nil, fmt.Errorf("Development summary needs a Jira issue key or URL, for example: show the development summary for PROJ-123")
+		}
+		return []string{"jira", "--experimental", "development", "summary", ident, "--output-mode", "json"}, nil
+	}),
+	compileIntentRule("development-pull-requests", `(?i)^\s*(?:show|read)\s+(?:the\s+)?pull\s+requests?(?:\s+for\s+(?P<ident>`+identRe+`))?\s*$`, func(groups map[string]string) ([]string, error) {
+		ident := strings.TrimSpace(groups["ident"])
+		if ident == "" {
+			return nil, fmt.Errorf("Pull request inspection needs a Jira issue key or URL, for example: show the pull requests for PROJ-123")
+		}
+		return []string{"jira", "--experimental", "development", "pull-requests", ident, "--output-mode", "json"}, nil
 	}),
 	compileIntentRule("list-transitions", `(?i)^\s*list\s+available\s+transitions(?:\s+for\s+(?P<ident>`+identRe+`))?\s*$`, func(groups map[string]string) ([]string, error) {
 		ident := strings.TrimSpace(groups["ident"])
@@ -214,7 +238,7 @@ var intentRules = []intentRule{
 		if ident == "" {
 			return nil, fmt.Errorf("Reading a Confluence page needs a page ID, URL, or SPACE:\"Title\" identifier")
 		}
-		return []string{"confluence", "info", ident, "--output-mode", "summary"}, nil
+		return []string{"confluence", "view", ident, "--format", "text", "--output-mode", "json"}, nil
 	}),
 	compileIntentRule("update-confluence", `(?i)^\s*update\s+confluence\s+page\s+(?P<ident>\S+)\s+to\s+include\s+(?P<change>.+)\s*$`, func(groups map[string]string) ([]string, error) {
 		return nil, fmt.Errorf("Confluence page editing requires fetching and updating storage XHTML; use the direct page workflow for %s", groups["ident"])

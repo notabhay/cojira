@@ -1,0 +1,16 @@
+{
+  "fields": {
+    "project": {
+      "key": "${PROJECT}"
+    },
+    "summary": "${SUMMARY}",
+    "description": "Generated from a reusable batch/create template.",
+    "issuetype": {
+      "name": "${TYPE}"
+    },
+    "priority": {
+      "name": "Medium"
+    },
+    "labels": ["cojira", "template"]
+  }
+}

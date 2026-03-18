@@ -12,6 +12,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type bulkTransitionStoredResult struct {
+	Keys []string `json:"keys,omitempty"`
+}
+
 type bulkTransitionPlan struct {
 	Version     int            `json:"version"`
 	JQL         string         `json:"jql"`
@@ -47,6 +51,9 @@ func NewBulkTransitionCmd() *cobra.Command {
 func runBulkTransition(cmd *cobra.Command, _ []string) error {
 	mode := cli.NormalizeOutputMode(cmd)
 	cli.ApplyPlanFlag(cmd)
+	if mode == "key" && !cli.SupportsKeyOutput(cmd) {
+		return cli.KeyModeUnsupportedError(cmd)
+	}
 	client, err := clientFromCmd(cmd)
 	if err != nil {
 		return err
@@ -92,12 +99,24 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 	}
 
 	if !dryRun && idempotency.IsDuplicate(idemKey) {
+		var stored bulkTransitionStoredResult
+		found, loadErr := idempotency.LoadValue(idemKey, &stored)
+		if loadErr != nil {
+			return loadErr
+		}
+		if found && mode == "key" && len(stored.Keys) > 0 {
+			for _, key := range stored.Keys {
+				fmt.Println(key)
+			}
+			return nil
+		}
 		if mode == "json" {
 			return output.PrintJSON(output.BuildEnvelope(
 				true, "jira", "bulk-transition", target,
 				map[string]any{
 					"skipped":     true,
 					"reason":      "idempotency_key_already_used",
+					"keys":        stored.Keys,
 					"request_id":  reqID,
 					"idempotency": map[string]any{"key": idemKey},
 				},
@@ -116,7 +135,7 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 	var completed []idempotency.ResumeItem
 	var remaining []idempotency.ResumeItem
 
-	if dryRun && mode != "json" && !quiet && mode != "summary" {
+	if dryRun && mode != "json" && mode != "summary" && mode != "key" && !quiet {
 		fmt.Print("[DRY-RUN MODE - no changes will be made]\n\n")
 	}
 
@@ -192,7 +211,7 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 						item["dry_run"] = true
 						item["receipt"] = r.Format()
 						item["ok"] = true
-						if mode != "json" && !quiet && mode != "summary" {
+						if mode != "json" && mode != "summary" && mode != "key" && !quiet {
 							fmt.Println(r.Format())
 						}
 						success++
@@ -244,8 +263,11 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 									item["receipt"] = r.Format()
 									item["ok"] = true
 									item["to_status"] = newStatus
-									if mode != "json" && !quiet && mode != "summary" {
+									if mode != "json" && mode != "summary" && mode != "key" && !quiet {
 										fmt.Println(r.Format())
+									}
+									if mode == "key" {
+										fmt.Println(key)
 									}
 									success++
 									completed = append(completed, idempotency.ResumeItem{
@@ -266,7 +288,7 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 			item["error"] = opErr.Error()
 			r := output.Receipt{OK: false, Message: fmt.Sprintf("%s: %v", key, opErr)}
 			item["receipt"] = r.Format()
-			if mode != "json" && !quiet && mode != "summary" {
+			if mode != "json" && mode != "summary" && mode != "key" && !quiet {
 				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), r.Format())
 			}
 			failures = append(failures, failureEntry{key: key, err: opErr.Error()})
@@ -290,7 +312,7 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 	}
 
 	if !dryRun && len(failures) == 0 {
-		if recErr := idempotency.Record(idemKey, "jira.bulk-transition"); recErr != nil {
+		if recErr := idempotency.RecordKindValue(idemKey, "result", "jira.bulk-transition", bulkTransitionStoredResult{Keys: plan.Keys}); recErr != nil {
 			return &cerrors.CojiraError{
 				Code:     cerrors.OpFailed,
 				Message:  fmt.Sprintf("Bulk transition completed, but the completion marker could not be saved: %v", recErr),
@@ -338,6 +360,12 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 		fmt.Printf("Bulk transition complete: %d succeeded, %d failed.\n", success, len(failures))
 		if len(failures) > 0 {
 			fmt.Printf("Resume with the same command and --idempotency-key %s.\n", idemKey)
+			return &cerrors.CojiraError{ExitCode: 1}
+		}
+		return nil
+	}
+	if mode == "key" {
+		if len(failures) > 0 {
 			return &cerrors.CojiraError{ExitCode: 1}
 		}
 		return nil

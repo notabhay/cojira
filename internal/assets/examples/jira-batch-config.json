@@ -3,20 +3,38 @@
   "operations": [
     {
       "op": "create",
-      "file": "jira-create-payload.json"
+      "template": "jira-create-template.json",
+      "vars": ["PROJECT=PROJ", "SUMMARY=Parent task from batch", "TYPE=Task"],
+      "capture": "PARENT_KEY"
+    },
+    {
+      "op": "create",
+      "inline": {
+        "fields": {
+          "project": {
+            "key": "PROJ"
+          },
+          "issuetype": {
+            "name": "Sub-task"
+          },
+          "summary": "Child issue created from inline batch payload",
+          "parent": {
+            "key": "${PARENT_KEY}"
+          }
+        }
+      }
     },
     {
       "op": "update",
-      "issue": "PROJ-123",
-      "file": "jira-update-payload.json",
+      "issue": "${PARENT_KEY}",
+      "inline": {
+        "fields": {
+          "priority": {
+            "name": "High"
+          }
+        }
+      },
       "notify": false
-    },
-    {
-      "op": "transition",
-      "issue": "PROJ-123",
-      "transition": "21",
-      "notify": true
     }
   ]
 }
-

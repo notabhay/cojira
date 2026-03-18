@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,8 +35,9 @@ func TestExpiredKeyTreatedAsNew(t *testing.T) {
 	t.Setenv("COJIRA_IDEMPOTENCY_DIR", dir)
 
 	// Write a backdated entry
-	storeFile := filepath.Join(dir, "expired-key.json")
-	e := entry{Key: "expired-key", Timestamp: float64(time.Now().Unix() - 100_000)}
+	storeFile, err := storePath("expired-key")
+	require.NoError(t, err)
+	e := entry{Key: "expired-key", Kind: kindDefault, TTLSeconds: ttlForKind(kindDefault), Timestamp: float64(time.Now().Unix() - 100_000)}
 	data, err := json.Marshal(e)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(storeFile, data, 0o644))
@@ -48,13 +50,15 @@ func TestClearStore(t *testing.T) {
 	t.Setenv("COJIRA_IDEMPOTENCY_DIR", dir)
 
 	// Write a fresh entry
-	fresh := filepath.Join(dir, "fresh.json")
-	freshData, _ := json.Marshal(entry{Key: "fresh", Timestamp: float64(time.Now().Unix())})
+	fresh, err := storePath("fresh")
+	require.NoError(t, err)
+	freshData, _ := json.Marshal(entry{Key: "fresh", Kind: kindDefault, TTLSeconds: ttlForKind(kindDefault), Timestamp: float64(time.Now().Unix())})
 	require.NoError(t, os.WriteFile(fresh, freshData, 0o644))
 
 	// Write an expired entry
-	expired := filepath.Join(dir, "expired.json")
-	expiredData, _ := json.Marshal(entry{Key: "expired", Timestamp: float64(time.Now().Unix() - 100_000)})
+	expired, err := storePath("expired")
+	require.NoError(t, err)
+	expiredData, _ := json.Marshal(entry{Key: "expired", Kind: kindDefault, TTLSeconds: ttlForKind(kindDefault), Timestamp: float64(time.Now().Unix() - 100_000)})
 	require.NoError(t, os.WriteFile(expired, expiredData, 0o644))
 
 	removed := ClearStore()
@@ -80,7 +84,8 @@ func TestClearStoreCorruptFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("COJIRA_IDEMPOTENCY_DIR", dir)
 
-	corrupt := filepath.Join(dir, "bad.json")
+	corrupt, err := storePath("bad")
+	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(corrupt, []byte("not json"), 0o644))
 
 	removed := ClearStore()
@@ -92,7 +97,8 @@ func TestIsDuplicateCorruptFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("COJIRA_IDEMPOTENCY_DIR", dir)
 
-	corrupt := filepath.Join(dir, "bad.json")
+	corrupt, err := storePath("bad")
+	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(corrupt, []byte("not json"), 0o644))
 
 	assert.False(t, IsDuplicate("bad"))
@@ -105,4 +111,15 @@ func TestXDGCacheHome(t *testing.T) {
 
 	expected := filepath.Join(dir, "cojira", "idempotency")
 	assert.Equal(t, expected, storeDir())
+}
+
+func TestStorePathHashesKeyInsideStoreDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("COJIRA_IDEMPOTENCY_DIR", dir)
+
+	path, err := storePath("../unsafe/key")
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(path, dir+string(filepath.Separator)))
+	assert.NotContains(t, path, "..")
+	assert.NotContains(t, path, "unsafe")
 }

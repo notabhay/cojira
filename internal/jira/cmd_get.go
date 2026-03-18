@@ -41,6 +41,14 @@ func runGet(cmd *cobra.Command, args []string) error {
 
 	issue, err := client.GetIssue(issueID, fieldsFlag, expandFlag)
 	if err != nil {
+		if mode == "json" {
+			errObj, _ := output.ErrorObj(errorCode(err, "FETCH_FAILED"), err.Error(), "", "", nil)
+			return output.PrintJSON(output.BuildEnvelope(
+				false, "jira", "get",
+				map[string]any{"issue": issueID},
+				nil, nil, []any{errObj}, "", "", "", nil,
+			))
+		}
 		return err
 	}
 
@@ -70,7 +78,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		if mode == "json" {
-			result := map[string]any{"saved_to": outputFile}
+			result := map[string]any{"schema": "jira.issue.saved/v1", "saved_to": outputFile}
 			if summaryFlag {
 				result["summary"] = summaryInfo
 			}
@@ -92,9 +100,11 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	if mode == "json" {
-		result := issue
+		result := deepCopyMap(issue)
+		result["schema"] = "jira.issue/v1"
+		result["url"] = summaryInfo["url"]
 		if summaryFlag {
-			result = map[string]any{"summary": summaryInfo}
+			result = map[string]any{"schema": "jira.issue.summary/v1", "summary": summaryInfo}
 		}
 		return output.PrintJSON(output.BuildEnvelope(
 			true, "jira", "get",

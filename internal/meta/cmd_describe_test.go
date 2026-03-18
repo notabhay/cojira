@@ -2,39 +2,28 @@ package meta
 
 import (
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/notabhay/cojira/internal/board"
+	"github.com/notabhay/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/confluence"
 	"github.com/notabhay/cojira/internal/dotenv"
+	"github.com/notabhay/cojira/internal/jira"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func testRootCmd() *cobra.Command {
-	root := &cobra.Command{Use: "cojira"}
-
-	// Add stub jira subcommand with sample sub-subcommands.
-	jiraCmd := &cobra.Command{Use: "jira", Short: "Jira operations"}
-	for _, name := range []string{"info", "get", "raw", "delete", "update", "create", "transition",
-		"transitions", "search", "board-issues", "fields", "whoami", "validate",
-		"batch", "bulk-update", "bulk-transition", "bulk-update-summaries",
-		"sync", "sync-from-dir"} {
-		sub := &cobra.Command{Use: name, Short: name + " command"}
-		jiraCmd.AddCommand(sub)
-	}
+	root := cli.NewRootCmd("test")
+	jiraCmd := jira.NewJiraCmd()
+	board.RegisterBoardCommands(jiraCmd, func(cmd *cobra.Command) (*jira.Client, error) {
+		return nil, nil
+	})
 	root.AddCommand(jiraCmd)
-
-	// Add stub confluence subcommand.
-	confCmd := &cobra.Command{Use: "confluence", Short: "Confluence operations"}
-	for _, name := range []string{"info", "get", "view", "raw", "comments", "update", "create", "rename",
-		"move", "tree", "find", "copy-tree", "archive", "validate", "batch"} {
-		sub := &cobra.Command{Use: name, Short: name + " command"}
-		confCmd.AddCommand(sub)
-	}
-	root.AddCommand(confCmd)
+	root.AddCommand(confluence.NewConfluenceCmd())
 
 	// Add meta commands.
 	root.AddCommand(NewBootstrapCmd())
@@ -140,21 +129,21 @@ func TestAgentPromptNoLongerListsConfluenceCommentsUnsupported(t *testing.T) {
 func TestDescribeJSONIsValidJSON(t *testing.T) {
 	root := testRootCmd()
 
-	// Capture stdout.
 	origStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
+	tmpFile, err := os.CreateTemp(t.TempDir(), "describe-json-*.out")
+	require.NoError(t, err)
+	os.Stdout = tmpFile
 
 	// Must set args on root - cobra's Execute() traverses to root.
 	root.SetArgs([]string{"describe", "--output-mode", "json"})
-	err := root.Execute()
-
-	_ = w.Close()
+	err = root.Execute()
+	require.NoError(t, tmpFile.Close())
 	os.Stdout = origStdout
 
 	require.NoError(t, err)
 
-	buf, _ := io.ReadAll(r)
+	buf, err := os.ReadFile(tmpFile.Name())
+	require.NoError(t, err)
 	require.NotEmpty(t, buf)
 
 	var data map[string]any
@@ -177,18 +166,19 @@ func TestDescribeJSONIncludesEnvLoadingAndSources(t *testing.T) {
 	root := testRootCmd()
 
 	origStdout := os.Stdout
-	r, w, err := os.Pipe()
+	tmpFile, err := os.CreateTemp(t.TempDir(), "describe-json-env-*.out")
 	require.NoError(t, err)
-	os.Stdout = w
+	os.Stdout = tmpFile
 
 	root.SetArgs([]string{"describe", "--output-mode", "json"})
 	err = root.Execute()
 
-	_ = w.Close()
+	require.NoError(t, tmpFile.Close())
 	os.Stdout = origStdout
 	require.NoError(t, err)
 
-	buf, _ := io.ReadAll(r)
+	buf, err := os.ReadFile(tmpFile.Name())
+	require.NoError(t, err)
 	require.NotEmpty(t, buf)
 
 	var data map[string]any

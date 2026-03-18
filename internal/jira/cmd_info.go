@@ -18,6 +18,7 @@ func NewInfoCmd() *cobra.Command {
 		RunE:  runInfo,
 	}
 	cmd.Flags().String("fields", "", "Fields to request (comma-separated)")
+	cmd.Flags().Bool("with-development", false, "EXPERIMENTAL: Include Jira Development-tab summary data")
 	cmd.Flags().Bool("summary", false, "Print a compact summary")
 	cmd.Flags().Bool("full", false, "Include the description in human output")
 	cli.AddOutputFlags(cmd, true)
@@ -33,6 +34,7 @@ func runInfo(cmd *cobra.Command, args []string) error {
 
 	issueID := ResolveIssueIdentifier(args[0])
 	fieldsFlag, _ := cmd.Flags().GetString("fields")
+	withDevelopment, _ := cmd.Flags().GetBool("with-development")
 	summaryFlag, _ := cmd.Flags().GetBool("summary")
 	fullFlag, _ := cmd.Flags().GetBool("full")
 
@@ -46,6 +48,14 @@ func runInfo(cmd *cobra.Command, args []string) error {
 
 	issue, err := client.GetIssue(issueID, fields, "")
 	if err != nil {
+		if mode == "json" {
+			errObj, _ := output.ErrorObj(errorCode(err, "FETCH_FAILED"), err.Error(), "", "", nil)
+			return output.PrintJSON(output.BuildEnvelope(
+				false, "jira", "info",
+				map[string]any{"issue": issueID},
+				nil, nil, []any{errObj}, "", "", "", nil,
+			))
+		}
 		return err
 	}
 
@@ -89,10 +99,30 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		"url":      info["url"],
 	}
 
+	if withDevelopment {
+		if err := requireExperimentalJira(cmd); err != nil {
+			return err
+		}
+		issueRef, apiBase, developmentSummary, err := fetchDevelopmentSummary(client, issueID)
+		if err != nil {
+			return developmentCommandError(mode, "info", issueID, err)
+		}
+		development := map[string]any{
+			"issue":    issueRef,
+			"api_base": apiBase,
+			"summary":  developmentSummary,
+			"counts":   developmentCounts(developmentSummary),
+		}
+		info["development"] = development
+		summaryInfo["development"] = development["counts"]
+	}
+
 	if mode == "json" {
 		result := info
 		if summaryFlag {
-			result = map[string]any{"summary": summaryInfo}
+			result = map[string]any{"schema": "jira.info.summary/v1", "summary": summaryInfo}
+		} else {
+			result["schema"] = "jira.info/v1"
 		}
 		return output.PrintJSON(output.BuildEnvelope(
 			true, "jira", "info",
@@ -107,6 +137,9 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		priority := stringOr(info["priority"], "-")
 		fmt.Printf("%s: %s (Status: %s, Assignee: %s, Priority: %s)\n",
 			summaryInfo["key"], summaryInfo["summary"], status, assignee, priority)
+		if withDevelopment {
+			fmt.Printf("Development: %s\n", formatDevelopmentCounts(summaryInfo["development"]))
+		}
 		return nil
 	}
 
@@ -119,6 +152,9 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Status: %s | Assignee: %s | Priority: %s\n",
 			summaryInfo["status"], summaryInfo["assignee"], summaryInfo["priority"])
 		fmt.Printf("Labels: %s | URL: %s\n", labelsStr, summaryInfo["url"])
+		if withDevelopment {
+			fmt.Printf("Development: %s\n", formatDevelopmentCounts(summaryInfo["development"]))
+		}
 		return nil
 	}
 
@@ -159,11 +195,31 @@ func runInfo(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Components: %s\n", componentsStr)
 	fmt.Printf("FixVersions: %s\n", fixVersionsStr)
 	fmt.Printf("Versions:  %s\n", versionsStr)
+	if withDevelopment {
+		fmt.Printf("Development: %s\n", formatDevelopmentCounts(info["development"].(map[string]any)["counts"]))
+	}
 	if fullFlag {
 		fmt.Printf("Description:\n%v\n", stringOr(info["description"], ""))
 	}
 	fmt.Printf("URL:       %v\n", info["url"])
 	return nil
+}
+
+func formatDevelopmentCounts(raw any) string {
+	counts, _ := raw.(map[string]any)
+	if counts == nil {
+		return "-"
+	}
+	parts := []string{}
+	for _, key := range []string{"pullrequest", "repository", "branch", "build", "review", "deployment-environment"} {
+		if entry, ok := counts[key].(map[string]any); ok {
+			parts = append(parts, fmt.Sprintf("%s=%d", key, intFromAny(entry["count"], 0)))
+		}
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func stringOr(v any, fallback string) string {

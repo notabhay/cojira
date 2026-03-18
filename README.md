@@ -69,7 +69,7 @@ Use the canonical one-line prompt above, then treat [`COJIRA-BOOTSTRAP.md`](COJI
 - Confluence page editing is storage-format XHTML first; the tool assumes you preserve macros rather than converting through Markdown,
 - multi-item mutation flows now emit machine-readable `resumable_state` on partial failure,
 - rerunning the same command with the emitted `--idempotency-key` resumes from the frozen operation snapshot instead of replaying succeeded items,
-- output modes are explicit and JSON output is designed for chaining.
+- output modes are explicit, JSON output is designed for chaining, and supported Jira mutation commands can emit scalar keys directly.
 
 The resumable partial-failure contract currently covers:
 
@@ -107,12 +107,15 @@ The resumable partial-failure contract currently covers:
 | `bulk-transition` | Transition many issues matched by JQL |
 | `bulk-update` | Apply one payload to many issues |
 | `bulk-update-summaries` | Rename many issues from CSV or JSON |
-| `create` | Create an issue from JSON |
+| `clone` | Create a new issue by cloning an existing one |
+| `create` | Create an issue from JSON, quick flags, templates, or a cloned source issue |
+| `development` | Experimental Jira Development-tab data reads |
 | `delete` | Delete an issue |
 | `fields` | Search Jira fields |
 | `get` | Fetch full issue JSON |
-| `info` | Show issue metadata |
+| `info` | Show issue metadata, optionally with development summary |
 | `raw` | Send an allowlisted Jira REST request |
+| `raw-internal` | Experimental Jira internal/API-adjacent passthrough |
 | `search` | Search issues using JQL |
 | `sync` | Sync issues to local folders |
 | `sync-from-dir` | Apply updates from local ticket folders |
@@ -140,7 +143,7 @@ The resumable partial-failure contract currently covers:
 | `tree` | Show page hierarchy |
 | `update` | Update a page from XHTML |
 | `validate` | Validate storage-format XHTML |
-| `view` | Fetch rendered HTML for reading |
+| `view` | Fetch rendered HTML, text, or markdown for reading |
 
 ## Representative Examples
 
@@ -153,6 +156,18 @@ cojira describe --with-context --output-mode json
 
 # Read a Jira issue
 cojira jira info PROJ-123 --output-mode summary
+
+# Read issue metadata plus development summary
+cojira jira info PROJ-123 --with-development --output-mode json
+
+# Quick-create a Jira issue
+cojira jira create --project PROJ --type Task --summary "Investigate login bug" --dry-run
+
+# Read detailed Jira development data
+cojira jira --experimental development summary PROJ-123 --output-mode json
+
+# Read Confluence rendered text
+cojira confluence view 12345 --format text --output-mode json
 
 # Preview a Jira update
 cojira jira update PROJ-123 --set labels+=urgent --dry-run

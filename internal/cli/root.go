@@ -39,11 +39,21 @@ Tools:
 Examples:
   cojira describe --output-mode json
   cojira do 'move PROJ-123 to Done'
-  cojira doctor
-  cojira bootstrap
-  cojira confluence --help
-  cojira jira --help`,
-		Version:       version,
+	  cojira doctor
+	  cojira bootstrap
+	  cojira confluence --help
+	  cojira jira --help`,
+		Version: version,
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			if err := ValidateOutputMode(cmd); err != nil {
+				return err
+			}
+			mode := strings.TrimSpace(resolveRequestedOutputMode(cmd))
+			if mode == "key" && !SupportsKeyOutput(cmd) {
+				return KeyModeUnsupportedError(cmd)
+			}
+			return nil
+		},
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

@@ -97,6 +97,50 @@ func TestConfluenceViewJSONFetchesRenderedContent(t *testing.T) {
 	assert.Equal(t, "view", payload["command"])
 }
 
+func TestConfluenceViewTextFormatJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "12345",
+			"body": map[string]any{
+				"view": map[string]any{"value": "<h2>Heading</h2><p>Hello<br/>world</p><ul><li>One</li></ul>"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("CONFLUENCE_BASE_URL", server.URL)
+	t.Setenv("CONFLUENCE_API_TOKEN", "token")
+
+	var payload map[string]any
+	require.NoError(t, executeJSONCommand(t, NewViewCmd(), []string{"12345", "--format", "text", "--output-mode", "json"}, &payload))
+	result := payload["result"].(map[string]any)
+	assert.Equal(t, "text", result["format"])
+	assert.Contains(t, result["content"], "Heading")
+	assert.Contains(t, result["content"], "Hello")
+}
+
+func TestConfluenceViewMarkdownFormatJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "12345",
+			"body": map[string]any{
+				"view": map[string]any{"value": "<h1>Title</h1><p><strong>Bold</strong> and <em>italics</em></p>"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	t.Setenv("CONFLUENCE_BASE_URL", server.URL)
+	t.Setenv("CONFLUENCE_API_TOKEN", "token")
+
+	var payload map[string]any
+	require.NoError(t, executeJSONCommand(t, NewViewCmd(), []string{"12345", "--format", "markdown", "--output-mode", "json"}, &payload))
+	result := payload["result"].(map[string]any)
+	assert.Equal(t, "markdown", result["format"])
+	assert.Contains(t, result["content"], "# Title")
+	assert.Contains(t, result["content"], "**Bold**")
+}
+
 func TestConfluenceInfoJSONIncludesLifecycleMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "version,history,space,ancestors,children.page", r.URL.Query().Get("expand"))

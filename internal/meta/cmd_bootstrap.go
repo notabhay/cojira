@@ -23,6 +23,7 @@ var bootstrapAssets = []struct{ src, dst string }{
 	{"examples/jira-bulk-summaries.csv", "examples/jira-bulk-summaries.csv"},
 	{"examples/jira-bulk-summaries.json", "examples/jira-bulk-summaries.json"},
 	{"examples/jira-create-payload.json", "examples/jira-create-payload.json"},
+	{"examples/jira-create-template.json", "examples/jira-create-template.json"},
 	{"examples/jira-update-payload.json", "examples/jira-update-payload.json"},
 	{"examples/cojira-project.json", "examples/cojira-project.json"},
 }

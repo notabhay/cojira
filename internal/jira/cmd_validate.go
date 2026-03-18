@@ -40,10 +40,18 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	sort.Strings(keys)
 
 	_, hasFields := payload["fields"].(map[string]any)
+	operations := mapSlice(payload["operations"])
 	if kind == "" {
-		if hasFields {
-			kind = "create/update"
-		} else {
+		switch {
+		case len(operations) > 0:
+			kind = "batch"
+		case hasFields:
+			if fields, _ := payload["fields"].(map[string]any); safeString(fields, "project", "key") != "" && safeString(fields, "issuetype", "name") != "" {
+				kind = "create"
+			} else {
+				kind = "update"
+			}
+		default:
 			kind = "unknown"
 		}
 	}
@@ -53,6 +61,49 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		"kind":       kind,
 		"has_fields": hasFields,
 		"keys":       keys,
+	}
+
+	switch kind {
+	case "create":
+		fields, _ := payload["fields"].(map[string]any)
+		missing := []string{}
+		if safeString(fields, "project", "key") == "" {
+			missing = append(missing, "fields.project.key")
+		}
+		if safeString(fields, "issuetype", "name") == "" && safeString(fields, "issuetype", "id") == "" {
+			missing = append(missing, "fields.issuetype")
+		}
+		if strings.TrimSpace(fmt.Sprintf("%v", fields["summary"])) == "" {
+			missing = append(missing, "fields.summary")
+		}
+		result["missing"] = missing
+		result["valid"] = len(missing) == 0
+	case "update":
+		result["valid"] = hasFields
+	case "batch":
+		opSummaries := []map[string]any{}
+		for _, op := range operations {
+			summary := map[string]any{
+				"op":      batchString(op, "op"),
+				"issue":   batchString(op, "issue"),
+				"capture": batchString(op, "capture"),
+			}
+			switch {
+			case batchString(op, "template") != "":
+				summary["source"] = "template"
+			case batchString(op, "clone") != "":
+				summary["source"] = "clone"
+			case batchInlineJSON(op) != "":
+				summary["source"] = "inline"
+			case batchString(op, "file") != "":
+				summary["source"] = "file"
+			default:
+				summary["source"] = "quick"
+			}
+			opSummaries = append(opSummaries, summary)
+		}
+		result["operations"] = opSummaries
+		result["valid"] = len(operations) > 0
 	}
 
 	if mode == "json" {

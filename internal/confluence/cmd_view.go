@@ -18,6 +18,7 @@ func NewViewCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE:  runView,
 	}
+	cmd.Flags().String("format", "html", "Output format: html, text, or markdown")
 	cmd.Flags().StringP("output", "o", "", "Output file (default: stdout)")
 	cli.AddOutputFlags(cmd, true)
 	cli.AddHTTPRetryFlags(cmd)
@@ -63,22 +64,35 @@ func runView(cmd *cobra.Command, args []string) error {
 	}
 
 	content := getNestedString(page, "body", "view", "value")
+	format, _ := cmd.Flags().GetString("format")
+	rendered, err := renderViewContent(content, format)
+	if err != nil {
+		if mode == "json" {
+			errObj, _ := output.ErrorObj(cerrors.Unsupported, err.Error(), "", "", nil)
+			return output.PrintJSON(output.BuildEnvelope(
+				false, "confluence", "view",
+				map[string]any{"page": pageArg, "page_id": pageID},
+				nil, nil, []any{errObj}, "", "", "", nil,
+			))
+		}
+		return err
+	}
 	outputFile, _ := cmd.Flags().GetString("output")
 
 	if outputFile != "" {
-		if err := writeFile(outputFile, content); err != nil {
+		if err := writeFile(outputFile, rendered); err != nil {
 			return err
 		}
 		if mode == "json" {
 			return output.PrintJSON(output.BuildEnvelope(
 				true, "confluence", "view",
 				map[string]any{"page": pageArg, "page_id": pageID},
-				map[string]any{"saved_to": outputFile, "representation": "view"},
+				map[string]any{"saved_to": outputFile, "representation": "view", "format": format},
 				nil, nil, "", "", "", nil,
 			))
 		}
 		if mode == "summary" {
-			fmt.Printf("Saved rendered page %s to %s.\n", pageID, outputFile)
+			fmt.Printf("Saved rendered page %s (%s) to %s.\n", pageID, format, outputFile)
 			return nil
 		}
 		fmt.Printf("Saved rendered content to: %s\n", outputFile)
@@ -89,14 +103,14 @@ func runView(cmd *cobra.Command, args []string) error {
 		return output.PrintJSON(output.BuildEnvelope(
 			true, "confluence", "view",
 			map[string]any{"page": pageArg, "page_id": pageID},
-			map[string]any{"content": content, "representation": "view"},
+			map[string]any{"content": rendered, "representation": "view", "format": format},
 			nil, nil, "", "", "", nil,
 		))
 	}
 	if mode == "summary" {
-		fmt.Printf("Fetched rendered page %s (content omitted in summary mode).\n", pageID)
+		fmt.Printf("Fetched rendered page %s in %s format.\n", pageID, format)
 		return nil
 	}
-	fmt.Println(content)
+	fmt.Println(rendered)
 	return nil
 }

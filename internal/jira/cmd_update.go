@@ -192,6 +192,9 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		if err := applySetOp(s.field, s.op, s.value, fields, currentFields); err != nil {
 			return err
 		}
+		if updated, ok := fields[s.field]; ok {
+			currentFields[s.field] = updated
+		}
 	}
 
 	if len(componentFlags) > 0 {
@@ -387,6 +390,10 @@ func applySetOp(field, op, value string, fields, currentFields map[string]any) e
 	if op == OpJSONSet {
 		var parsed any
 		if err := json.Unmarshal([]byte(value), &parsed); err != nil {
+			if field == "priority" {
+				fields[field] = map[string]any{"name": strings.TrimSpace(value)}
+				return nil
+			}
 			return &cerrors.CojiraError{
 				Code:     cerrors.InvalidJSON,
 				Message:  fmt.Sprintf("Invalid JSON for --set %s:=: %v", field, err),
@@ -395,6 +402,29 @@ func applySetOp(field, op, value string, fields, currentFields map[string]any) e
 		}
 		fields[field] = parsed
 		return nil
+	}
+
+	if op == OpSet {
+		arrayFields := map[string]bool{
+			"labels":      true,
+			"components":  true,
+			"versions":    true,
+			"fixVersions": true,
+		}
+		if arrayFields[field] {
+			return &cerrors.CojiraError{
+				Code:     cerrors.OpFailed,
+				Message:  fmt.Sprintf("Field %q is an array. Use %s:=[...] to replace it, or %s+=value to append.", field, field, field),
+				ExitCode: 1,
+			}
+		}
+		if cur, ok := currentFields[field].([]any); ok && cur != nil {
+			return &cerrors.CojiraError{
+				Code:     cerrors.OpFailed,
+				Message:  fmt.Sprintf("Field %q is an array on this issue. Use %s:=[...] to replace it, or %s+=value to append.", field, field, field),
+				ExitCode: 1,
+			}
+		}
 	}
 
 	if field == "priority" && op == OpSet {

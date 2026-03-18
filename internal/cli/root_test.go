@@ -20,6 +20,16 @@ func TestNormalizeOutputModeAutoResolvesJSONOffTTY(t *testing.T) {
 	assert.True(t, IsJSON(cmd))
 }
 
+func TestValidateOutputModeRejectsUnsupportedValue(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	AddOutputFlags(cmd, false)
+	require.NoError(t, cmd.Flags().Set("output-mode", "xml"))
+
+	err := ValidateOutputMode(cmd)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Unsupported output mode")
+}
+
 func TestExecuteReturnsConfigErrorForInvalidAliasConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	origDir, err := os.Getwd()

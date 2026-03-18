@@ -4,8 +4,8 @@ import "strings"
 
 // userMessages maps error codes to user-friendly messages.
 var userMessages = map[string]string{
-	ConfigMissingEnv:    "Setup is incomplete. Run `cojira init` and paste your Jira/Confluence URL and token.",
-	ConfigInvalid:       "Your configuration looks invalid. Re-run `cojira init` or fix your config file.",
+	ConfigMissingEnv:    "Setup is incomplete. Run `cojira doctor` to diagnose or `cojira init` to configure credentials.",
+	ConfigInvalid:       "Your configuration looks invalid. Run `cojira doctor` to diagnose or re-run `cojira init`.",
 	HTTP401:             "Your token doesn't have permission for this. Create a new token with the right access.",
 	HTTP403:             "Your token doesn't have permission for this. Create a new token with the right access.",
 	HTTP404:             "The URL returned 'not found'. Check that JIRA_BASE_URL includes any context path (e.g. /jira).",

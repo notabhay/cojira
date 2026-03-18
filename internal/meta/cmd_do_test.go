@@ -71,6 +71,18 @@ func TestParseRecognizedButInsufficientIntent(t *testing.T) {
 	assert.Contains(t, err.Error(), "need a Jira issue key")
 }
 
+func TestParseCreateIssueTitled(t *testing.T) {
+	result, err := parseIntent("create a new issue in PROJ titled Investigate login bug")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"jira", "create", "--project", "PROJ", "--type", "Task", "--summary", "Investigate login bug", "--dry-run"}, result)
+}
+
+func TestParseReadConfluencePageUsesViewText(t *testing.T) {
+	result, err := parseIntent("read this confluence page 12345")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"confluence", "view", "12345", "--format", "text", "--output-mode", "json"}, result)
+}
+
 func TestParseRecognizedUnsupportedIntent(t *testing.T) {
 	_, err := parseIntent("add a comment to PROJ-123")
 	require.Error(t, err)
