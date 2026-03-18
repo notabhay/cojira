@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_VERSION="beta"
 DEFAULT_GITHUB_REPO="notabhay/cojira"
 DEFAULT_BOOTSTRAP_OUT="/tmp/cojira/COJIRA-BOOTSTRAP.md"
 
@@ -19,6 +18,21 @@ die() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+resolve_latest_release_tag() {
+  local github_repo="$1"
+  local release_url="https://github.com/${github_repo}/releases/latest"
+  local final_url tag
+
+  final_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$release_url")" ||
+    die "Failed to resolve latest release tag from ${release_url}"
+  tag="${final_url##*/}"
+
+  case "$tag" in
+    v*) printf '%s' "$tag" ;;
+    *) die "Failed to parse latest release tag from ${final_url}" ;;
+  esac
 }
 
 detect_os() {
@@ -88,12 +102,13 @@ main() {
   need_cmd uname
   need_cmd sed
 
+  local github_repo="${COJIRA_GITHUB_REPO:-$DEFAULT_GITHUB_REPO}"
   local version="${COJIRA_VERSION:-}"
   local ref="${COJIRA_REF:-}"
 
   if [ -z "$version" ] && [ -z "$ref" ]; then
-    version="$DEFAULT_VERSION"
-    ref="refs/heads/${DEFAULT_VERSION}"
+    version="$(resolve_latest_release_tag "$github_repo")"
+    ref="refs/tags/${version}"
   elif [ -z "$ref" ]; then
     case "$version" in
       refs/heads/* | refs/tags/*)
@@ -114,11 +129,10 @@ main() {
   elif [ -z "$version" ]; then
     case "$ref" in
       refs/heads/* | refs/tags/*) version="${ref##*/}" ;;
-      *) version="$DEFAULT_VERSION" ;;
+      *) version="$ref" ;;
     esac
   fi
 
-  local github_repo="${COJIRA_GITHUB_REPO:-$DEFAULT_GITHUB_REPO}"
   local install_dir="${COJIRA_INSTALL_DIR:-${GOBIN:-$HOME/.local/bin}}"
   local bootstrap_out="${COJIRA_BOOTSTRAP_OUT:-$DEFAULT_BOOTSTRAP_OUT}"
 

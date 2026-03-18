@@ -375,6 +375,7 @@ curl -fsSL https://cojira.notabhay.xyz/install.sh | bash
 By default it:
 
 - redirects to the `beta` branch installer,
+- resolves the latest tagged GitHub release,
 - ensures a local Go toolchain is available if `go` is missing,
 - builds `cojira` into `${COJIRA_INSTALL_DIR:-${GOBIN:-$HOME/.local/bin}}/cojira`,
 - writes `COJIRA-BOOTSTRAP.md` to `/tmp/cojira/COJIRA-BOOTSTRAP.md`.
@@ -382,7 +383,7 @@ By default it:
 ### Optional installer overrides
 
 - `COJIRA_VERSION`: version label to embed in the built binary.
-- `COJIRA_REF`: Git ref to download instead of the default `refs/heads/beta`.
+- `COJIRA_REF`: Git ref to download instead of the default latest release tag.
 - `COJIRA_GITHUB_REPO`: alternate `owner/repo`.
 - `COJIRA_INSTALL_DIR`: install destination for the binary.
 - `COJIRA_BOOTSTRAP_OUT`: where the installer should write the bootstrap markdown.

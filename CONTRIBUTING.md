@@ -133,6 +133,7 @@ Keep those aligned in intent and defaults.
 The tracked Vercel deployment is intentionally simple:
 
 - `/install.sh` redirects to the current `beta` branch installer on GitHub,
+- that installer resolves the latest tagged release by default unless `COJIRA_REF` or `COJIRA_VERSION` overrides it,
 - the public prompt can stay stable at `cojira.notabhay.xyz`,
 - installer changes in `install.sh` take effect without editing the Vercel deployment config.
 

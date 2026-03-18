@@ -31,6 +31,7 @@ For another coding agent, the canonical prompt is:
 That flow:
 
 - installs from the stable custom-domain endpoint,
+- uses the `beta`-branch installer script, which resolves the latest tagged release by default,
 - writes `/tmp/cojira/COJIRA-BOOTSTRAP.md`,
 - then uses the bootstrap guide as the only required source of truth.
 
