@@ -50,9 +50,20 @@ func ghDetailViewFieldURL(client *jira.Client, boardID string, fieldID *int) str
 }
 
 func ghGetDetailViewFieldConfig(client *jira.Client, boardID string) (map[string]any, error) {
+	if client == nil {
+		return nil, &cerrors.CojiraError{
+			Code:        cerrors.Error,
+			Message:     "GreenHopper detail view request requires a Jira client.",
+			UserMessage: "This board command hit an internal setup error. Please update cojira and try again.",
+			ExitCode:    1,
+		}
+	}
 	u := ghDetailViewFieldConfigURL(client, boardID)
 	resp, err := client.RequestURL("GET", u, nil, nil)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireResponseBody(resp, "GreenHopper detail view config"); err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -85,7 +96,7 @@ func newDetailViewGetCmd(clientFn func(cmd *cobra.Command) (*jira.Client, error)
 			if err != nil {
 				return err
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -188,7 +199,7 @@ func newDetailViewSearchFieldsCmd(clientFn func(cmd *cobra.Command) (*jira.Clien
 					ExitCode: 2,
 				}
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -315,7 +326,7 @@ func newDetailViewExportCmd(clientFn func(cmd *cobra.Command) (*jira.Client, err
 			if err != nil {
 				return err
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -390,7 +401,7 @@ func newDetailViewApplyCmd(clientFn func(cmd *cobra.Command) (*jira.Client, erro
 			}
 			filePath, _ := cmd.Flags().GetString("file")
 			deleteMissing, _ := cmd.Flags().GetBool("delete-missing")
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}

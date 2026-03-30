@@ -105,10 +105,21 @@ func greenhopperURL(baseURL, path string) string {
 }
 
 func ghGetEditmodel(client *jira.Client, boardID string) (map[string]any, error) {
+	if client == nil {
+		return nil, &cerrors.CojiraError{
+			Code:        cerrors.Error,
+			Message:     "GreenHopper edit model request requires a Jira client.",
+			UserMessage: "This board command hit an internal setup error. Please update cojira and try again.",
+			ExitCode:    1,
+		}
+	}
 	u := greenhopperURL(client.BaseURL(), "rapidviewconfig/editmodel")
 	params := url.Values{"rapidViewId": {boardID}}
 	resp, err := client.RequestURL("GET", u, nil, params)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireResponseBody(resp, "GreenHopper edit model"); err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -131,6 +142,14 @@ func ghSwimlaneURL(client *jira.Client, boardID string, swimlaneID *int) string 
 }
 
 func ghRequestJSON(client *jira.Client, method, u string, payload any) (map[string]any, error) {
+	if client == nil {
+		return nil, &cerrors.CojiraError{
+			Code:        cerrors.Error,
+			Message:     "GreenHopper JSON request requires a Jira client.",
+			UserMessage: "This board command hit an internal setup error. Please update cojira and try again.",
+			ExitCode:    1,
+		}
+	}
 	var body []byte
 	if payload != nil {
 		var err error
@@ -143,6 +162,9 @@ func ghRequestJSON(client *jira.Client, method, u string, payload any) (map[stri
 	if err != nil {
 		return nil, err
 	}
+	if err := requireResponseBody(resp, "GreenHopper request"); err != nil {
+		return nil, err
+	}
 	defer func() { _ = resp.Body.Close() }()
 	var data map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
@@ -152,6 +174,14 @@ func ghRequestJSON(client *jira.Client, method, u string, payload any) (map[stri
 }
 
 func ghRequestNoBody(client *jira.Client, method, u string, payload any) error {
+	if client == nil {
+		return &cerrors.CojiraError{
+			Code:        cerrors.Error,
+			Message:     "GreenHopper request requires a Jira client.",
+			UserMessage: "This board command hit an internal setup error. Please update cojira and try again.",
+			ExitCode:    1,
+		}
+	}
 	var body []byte
 	if payload != nil {
 		var err error
@@ -162,6 +192,9 @@ func ghRequestNoBody(client *jira.Client, method, u string, payload any) error {
 	}
 	resp, err := client.RequestURL(method, u, body, nil)
 	if err != nil {
+		return err
+	}
+	if err := requireResponseBody(resp, "GreenHopper request"); err != nil {
 		return err
 	}
 	_ = resp.Body.Close()
@@ -226,7 +259,7 @@ func newSwimlanesGetCmd(clientFn func(cmd *cobra.Command) (*jira.Client, error))
 			if err != nil {
 				return err
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -306,7 +339,7 @@ func newSwimlanesExportCmd(clientFn func(cmd *cobra.Command) (*jira.Client, erro
 			if err != nil {
 				return err
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -384,7 +417,7 @@ func newSwimlanesApplyCmd(clientFn func(cmd *cobra.Command) (*jira.Client, error
 			}
 			filePath, _ := cmd.Flags().GetString("file")
 			deleteMissing, _ := cmd.Flags().GetBool("delete-missing")
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -817,7 +850,7 @@ func newSwimlanesSetStrategyCmd(clientFn func(cmd *cobra.Command) (*jira.Client,
 					ExitCode: 2,
 				}
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -888,7 +921,7 @@ func newSwimlanesAddCmd(clientFn func(cmd *cobra.Command) (*jira.Client, error))
 			if err != nil {
 				return err
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -986,7 +1019,7 @@ func newSwimlanesUpdateCmd(clientFn func(cmd *cobra.Command) (*jira.Client, erro
 			if err != nil {
 				return err
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -1107,7 +1140,7 @@ func newSwimlanesDeleteCmd(clientFn func(cmd *cobra.Command) (*jira.Client, erro
 			if err != nil {
 				return err
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -1195,7 +1228,7 @@ func newSwimlanesMoveCmd(clientFn func(cmd *cobra.Command) (*jira.Client, error)
 			if err != nil {
 				return err
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -1282,7 +1315,7 @@ func newSwimlanesValidateCmd(clientFn func(cmd *cobra.Command) (*jira.Client, er
 			if err != nil {
 				return err
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}
@@ -1456,7 +1489,7 @@ func newSwimlanesSimulateCmd(clientFn func(cmd *cobra.Command) (*jira.Client, er
 			if err != nil {
 				return err
 			}
-			client, err := clientFn(cmd)
+			client, err := resolveBoardClient(cmd, clientFn)
 			if err != nil {
 				return err
 			}

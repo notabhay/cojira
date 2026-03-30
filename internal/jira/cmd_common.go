@@ -61,3 +61,9 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 		Debug: rc.Debug,
 	})
 }
+
+// ClientFromCmd creates a Jira client from cobra command context for callers
+// outside the jira package.
+func ClientFromCmd(cmd *cobra.Command) (*Client, error) {
+	return clientFromCmd(cmd)
+}

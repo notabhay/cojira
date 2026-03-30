@@ -22,7 +22,7 @@ func main() {
 
 	// Build jira command and attach board subcommands.
 	jiraCmd := jira.NewJiraCmd()
-	board.RegisterBoardCommands(jiraCmd, nil)
+	board.RegisterBoardCommands(jiraCmd, jira.ClientFromCmd)
 
 	// Register all top-level commands.
 	rootCmd.AddCommand(confluence.NewConfluenceCmd())
