@@ -224,6 +224,49 @@ func TestGetPageLabels(t *testing.T) {
 	assert.NotNil(t, result["results"])
 }
 
+func TestListPageComments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/content/12345/child/comment", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "200"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListPageComments("12345", 20, 0)
+	require.NoError(t, err)
+	assert.NotNil(t, result["results"])
+}
+
+func TestAddPageComment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/content", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "200"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.AddPageComment("12345", "<p>hello</p>")
+	require.NoError(t, err)
+	assert.Equal(t, "200", result["id"])
+}
+
+func TestDeleteContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/content/12345", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeleteContent("12345"))
+}
+
 func TestGetChildren(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

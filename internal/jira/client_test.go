@@ -388,6 +388,201 @@ func TestListProjects(t *testing.T) {
 	assert.Equal(t, "RAPTOR", projects[0]["key"])
 }
 
+func TestGetWatchers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/watchers", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"watchCount": 1,
+			"watchers": []map[string]any{
+				{"displayName": "Jane Doe"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetWatchers("PROJ-123")
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), result["watchCount"])
+}
+
+func TestAddWatcher(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/watchers", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.AddWatcher("PROJ-123", "jdoe"))
+}
+
+func TestRemoveWatcher(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/watchers", r.URL.Path)
+		assert.Equal(t, "jdoe", r.URL.Query().Get("username"))
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.RemoveWatcher("PROJ-123", "username", "jdoe"))
+}
+
+func TestListWorklogs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/worklog", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total": 1,
+			"worklogs": []map[string]any{
+				{"id": "77", "timeSpent": "1h"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListWorklogs("PROJ-123", 20, 0)
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), result["total"])
+}
+
+func TestAddWorklog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/worklog", r.URL.Path)
+		w.WriteHeader(201)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "77"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.AddWorklog("PROJ-123", map[string]any{"timeSpent": "1h"})
+	require.NoError(t, err)
+	assert.Equal(t, "77", result["id"])
+}
+
+func TestUpdateWorklog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PUT", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/worklog/77", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "77"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.UpdateWorklog("PROJ-123", "77", map[string]any{"timeSpent": "2h"})
+	require.NoError(t, err)
+	assert.Equal(t, "77", result["id"])
+}
+
+func TestDeleteWorklog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/worklog/77", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeleteWorklog("PROJ-123", "77"))
+}
+
+func TestDeleteIssue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123", r.URL.Path)
+		assert.Equal(t, "true", r.URL.Query().Get("deleteSubtasks"))
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeleteIssue("PROJ-123", true))
+}
+
+func TestListBoardSprints(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/agile/1.0/board/45434/sprint", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"values": []map[string]any{{"id": 1, "name": "Sprint 1"}},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListBoardSprints("45434", "", 20, 0)
+	require.NoError(t, err)
+	assert.NotNil(t, result["values"])
+}
+
+func TestGetSprint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/agile/1.0/sprint/88", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 88, "name": "Sprint 88"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetSprint("88")
+	require.NoError(t, err)
+	assert.Equal(t, "Sprint 88", result["name"])
+}
+
+func TestCreateSprint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/agile/1.0/sprint", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 99, "name": "Sprint 99"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.CreateSprint(map[string]any{"name": "Sprint 99", "originBoardId": 45434})
+	require.NoError(t, err)
+	assert.Equal(t, "Sprint 99", result["name"])
+}
+
+func TestUpdateSprint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PUT", r.Method)
+		assert.Equal(t, "/rest/agile/1.0/sprint/99", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 99, "state": "active"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.UpdateSprint("99", map[string]any{"state": "active"})
+	require.NoError(t, err)
+	assert.Equal(t, "active", result["state"])
+}
+
+func TestDeleteSprint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/agile/1.0/sprint/99", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeleteSprint("99"))
+}
+
+func TestAddIssuesToSprint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/agile/1.0/sprint/99/issue", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.AddIssuesToSprint("99", []string{"PROJ-1", "PROJ-2"}))
+}
+
 func TestUploadAttachment(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)

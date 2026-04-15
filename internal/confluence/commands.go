@@ -32,6 +32,7 @@ Environment variables:
 	cmd.AddCommand(NewValidateCmd())
 	cmd.AddCommand(NewInfoCmd())
 	cmd.AddCommand(NewGetCmd())
+	cmd.AddCommand(NewCommentCmd())
 	cmd.AddCommand(NewFindCmd())
 	cmd.AddCommand(NewSpacesCmd())
 	cmd.AddCommand(NewLabelsCmd())
@@ -42,6 +43,7 @@ Environment variables:
 	cmd.AddCommand(NewMoveCmd())
 	cmd.AddCommand(NewArchiveCmd())
 	cmd.AddCommand(NewCopyTreeCmd())
+	cmd.AddCommand(NewDeleteCmd())
 	cmd.AddCommand(NewBatchCmd())
 
 	return cmd

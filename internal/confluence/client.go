@@ -324,6 +324,47 @@ func (c *Client) GetPageLabels(pageID string, limit, start int) (map[string]any,
 	return decodeJSON(resp)
 }
 
+// ListPageComments fetches comments on a page.
+func (c *Client) ListPageComments(pageID string, limit, start int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("limit", fmt.Sprintf("%d", limit))
+	params.Set("start", fmt.Sprintf("%d", start))
+	resp, err := c.Request("GET", "/content/"+pageID+"/child/comment", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// AddPageComment adds a storage-format comment to a page.
+func (c *Client) AddPageComment(pageID, bodyText string) (map[string]any, error) {
+	payload := map[string]any{
+		"type": "comment",
+		"container": map[string]any{
+			"type": "page",
+			"id":   pageID,
+		},
+		"body": map[string]any{
+			"storage": map[string]any{
+				"value":          bodyText,
+				"representation": "storage",
+			},
+		},
+	}
+	return c.CreatePage(payload)
+}
+
+// DeleteContent deletes a page or comment by content ID.
+func (c *Client) DeleteContent(contentID string) error {
+	resp, err := c.Request("DELETE", "/content/"+contentID, nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // GetChildren fetches child pages for a given page ID (fully paginated).
 func (c *Client) GetChildren(pageID string, limit int) ([]map[string]any, error) {
 	if limit <= 0 {

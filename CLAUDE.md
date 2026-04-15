@@ -72,8 +72,18 @@ Primary commands:
 - `get`
 - `search`
 - `fields`
+- `projects`
+- `users`
 - `whoami`
 - `create`
+- `assign`
+- `comment`
+- `attachment`
+- `link`
+- `watchers`
+- `worklog`
+- `sprint`
+- `delete`
 - `update`
 - `transition`
 - `transitions`
@@ -96,7 +106,10 @@ Primary commands:
 
 - `info`
 - `get`
+- `comment`
 - `find`
+- `spaces`
+- `labels`
 - `tree`
 - `create`
 - `update`
@@ -104,6 +117,7 @@ Primary commands:
 - `move`
 - `archive`
 - `copy-tree`
+- `delete`
 - `validate`
 - `batch`
 
@@ -111,24 +125,14 @@ Primary commands:
 
 ### Jira
 
-- comments,
-- watchers,
-- issue links,
-- attachments,
-- delete issue,
-- worklogs,
-- sprints,
 - board columns,
 - dashboards,
 - project administration.
 
 ### Confluence
 
-- comments,
 - attachments,
 - permissions administration,
-- delete page,
-- labels as a standalone command,
 - page history diffing,
 - templates,
 - blog posts,

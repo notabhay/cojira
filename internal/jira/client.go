@@ -549,6 +549,194 @@ func (c *Client) GetMyself() (map[string]any, error) {
 	return decodeJSON(resp)
 }
 
+// GetWatchers returns watcher metadata for an issue.
+func (c *Client) GetWatchers(issue string) (map[string]any, error) {
+	resp, err := c.Request("GET", "/issue/"+issue+"/watchers", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// AddWatcher adds a watcher to an issue. Jira expects a JSON string body.
+func (c *Client) AddWatcher(issue string, watcher string) error {
+	body, err := json.Marshal(watcher)
+	if err != nil {
+		return err
+	}
+	resp, err := c.Request("POST", "/issue/"+issue+"/watchers", body, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// RemoveWatcher removes a watcher from an issue.
+func (c *Client) RemoveWatcher(issue, paramKey, value string) error {
+	params := url.Values{}
+	params.Set(paramKey, value)
+	if paramKey == "username" {
+		params.Set("userName", value)
+	}
+	resp, err := c.Request("DELETE", "/issue/"+issue+"/watchers", nil, params)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// ListWorklogs fetches worklogs for an issue.
+func (c *Client) ListWorklogs(issue string, limit, startAt int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("maxResults", fmt.Sprintf("%d", limit))
+	params.Set("startAt", fmt.Sprintf("%d", startAt))
+	resp, err := c.Request("GET", "/issue/"+issue+"/worklog", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// AddWorklog creates a worklog on an issue.
+func (c *Client) AddWorklog(issue string, payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.Request("POST", "/issue/"+issue+"/worklog", body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// UpdateWorklog updates an existing worklog.
+func (c *Client) UpdateWorklog(issue, worklogID string, payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.Request("PUT", "/issue/"+issue+"/worklog/"+worklogID, body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// DeleteWorklog deletes an existing worklog.
+func (c *Client) DeleteWorklog(issue, worklogID string) error {
+	resp, err := c.Request("DELETE", "/issue/"+issue+"/worklog/"+worklogID, nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// DeleteIssue deletes a Jira issue.
+func (c *Client) DeleteIssue(issue string, deleteSubtasks bool) error {
+	params := url.Values{}
+	if deleteSubtasks {
+		params.Set("deleteSubtasks", "true")
+	}
+	resp, err := c.Request("DELETE", "/issue/"+issue, nil, params)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// ListBoardSprints lists sprints on a board.
+func (c *Client) ListBoardSprints(boardID, state string, limit, startAt int) (map[string]any, error) {
+	requestURL := fmt.Sprintf("%s%s/board/%s/sprint", c.baseURL, AgileBase, boardID)
+	params := url.Values{}
+	params.Set("maxResults", fmt.Sprintf("%d", limit))
+	params.Set("startAt", fmt.Sprintf("%d", startAt))
+	if strings.TrimSpace(state) != "" {
+		params.Set("state", state)
+	}
+	resp, err := c.RequestURL("GET", requestURL, nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// GetSprint fetches sprint metadata by ID.
+func (c *Client) GetSprint(sprintID string) (map[string]any, error) {
+	requestURL := fmt.Sprintf("%s%s/sprint/%s", c.baseURL, AgileBase, sprintID)
+	resp, err := c.RequestURL("GET", requestURL, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// CreateSprint creates a sprint.
+func (c *Client) CreateSprint(payload map[string]any) (map[string]any, error) {
+	requestURL := fmt.Sprintf("%s%s/sprint", c.baseURL, AgileBase)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.RequestURL("POST", requestURL, body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// UpdateSprint updates an existing sprint.
+func (c *Client) UpdateSprint(sprintID string, payload map[string]any) (map[string]any, error) {
+	requestURL := fmt.Sprintf("%s%s/sprint/%s", c.baseURL, AgileBase, sprintID)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.RequestURL("PUT", requestURL, body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// DeleteSprint deletes a sprint.
+func (c *Client) DeleteSprint(sprintID string) error {
+	requestURL := fmt.Sprintf("%s%s/sprint/%s", c.baseURL, AgileBase, sprintID)
+	resp, err := c.RequestURL("DELETE", requestURL, nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// AddIssuesToSprint assigns issues to a sprint.
+func (c *Client) AddIssuesToSprint(sprintID string, issues []string) error {
+	requestURL := fmt.Sprintf("%s%s/sprint/%s/issue", c.baseURL, AgileBase, sprintID)
+	body, err := json.Marshal(map[string]any{"issues": issues})
+	if err != nil {
+		return err
+	}
+	resp, err := c.RequestURL("POST", requestURL, body, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // ListAttachments returns attachment metadata from an issue.
 func (c *Client) ListAttachments(issue string) ([]map[string]any, error) {
 	data, err := c.GetIssue(issue, "attachment", "")
