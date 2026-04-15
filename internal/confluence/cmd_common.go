@@ -1,6 +1,8 @@
 package confluence
 
 import (
+	"crypto/tls"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"github.com/notabhay/cojira/internal/cli"
 	"github.com/notabhay/cojira/internal/config"
 	"github.com/notabhay/cojira/internal/httpclient"
+	"github.com/notabhay/cojira/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -19,13 +22,27 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 		baseURL = flagURL
 	}
 	token := strings.TrimSpace(os.Getenv("CONFLUENCE_API_TOKEN"))
+	verifySSL := true
+	verifySSLStr := strings.TrimSpace(os.Getenv("CONFLUENCE_VERIFY_SSL"))
+	if verifySSLStr != "" {
+		switch strings.ToLower(verifySSLStr) {
+		case "false", "0", "no":
+			verifySSL = false
+		}
+	}
+	userAgent := strings.TrimSpace(os.Getenv("CONFLUENCE_USER_AGENT"))
+	if userAgent == "" {
+		userAgent = confluenceDefaultUserAgent()
+	}
 
 	rc := cli.BuildRetryConfig(cmd)
 
 	return NewClient(ClientConfig{
-		BaseURL: baseURL,
-		Token:   token,
-		Timeout: time.Duration(rc.Timeout * float64(time.Second)),
+		BaseURL:   baseURL,
+		Token:     token,
+		UserAgent: userAgent,
+		VerifySSL: verifySSL,
+		Timeout:   time.Duration(rc.Timeout * float64(time.Second)),
 		RetryConfig: httpclient.RetryConfig{
 			Retries:           rc.Retries,
 			BaseDelay:         time.Duration(rc.RetryBaseDelay * float64(time.Second)),
@@ -38,6 +55,21 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 		},
 		Debug: rc.Debug,
 	})
+}
+
+func buildConfluenceHTTPClient(timeout time.Duration, verifySSL bool) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if !verifySSL {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+}
+
+func confluenceDefaultUserAgent() string {
+	return "cojira/" + version.Version
 }
 
 // loadProjectConfigData loads project config and returns the raw data map.

@@ -49,6 +49,11 @@ func main() {
 			code = ec.ExitCode()
 		}
 
+		type reported interface{ Reported() bool }
+		if rep, ok := err.(reported); ok && rep.Reported() {
+			os.Exit(code)
+		}
+
 		// Print the error since SilenceErrors suppresses cobra's default printing.
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
 		os.Exit(code)

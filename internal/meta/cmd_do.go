@@ -23,18 +23,22 @@ var (
 	updateSetRe  = regexp.MustCompile(`(?i)update\s+` + identRe + `\s+set\s+(\w+)\s+(?:to|=)\s+(.+)`)
 	findPagesRe  = regexp.MustCompile(`(?i)find\s+(?:confluence\s+)?pages?\s+(?:titled|named|called)\s+(.+)`)
 	searchRe     = regexp.MustCompile(`(?i)(?:search|find\s+issues?\s+in)\s+(\w+)\s+(?:for|where)\s+(.+)`)
-	showRe       = regexp.MustCompile(`(?i)(?:show|get|details?\s+(?:for|of)|info)\s+` + identRe)
+	showRe       = regexp.MustCompile(`(?i)(?:show|get|details?\s+(?:for|of)|info)\s+(?:(?:confluence|jira)\s+)?(?:(?:page|issue)\s+)?` + identRe)
 )
 
 // looksLikeConfluence returns true if ident appears to be a Confluence identifier.
-func looksLikeConfluence(ident string) bool {
-	if regexp.MustCompile(`^\d+$`).MatchString(ident) {
+func looksLikeConfluence(fullText string, ident string) bool {
+	lower := strings.ToLower(ident)
+	if strings.Contains(lower, "confluence") ||
+		strings.Contains(lower, "/wiki/") ||
+		strings.Contains(lower, "/pages/") {
 		return true
 	}
-	lower := strings.ToLower(ident)
-	return strings.Contains(lower, "confluence") ||
-		strings.Contains(lower, "/wiki/") ||
-		strings.Contains(lower, "/pages/")
+	if regexp.MustCompile(`^\d+$`).MatchString(ident) {
+		text := strings.ToLower(fullText)
+		return strings.Contains(text, "confluence") || strings.Contains(text, "page")
+	}
+	return false
 }
 
 // parseIntent maps natural language text to a cojira subcommand argument list.
@@ -86,7 +90,7 @@ func parseIntent(text string) []string {
 	if m := showRe.FindStringSubmatch(t); m != nil {
 		ident := m[1]
 		tool := "jira"
-		if looksLikeConfluence(ident) {
+		if looksLikeConfluence(t, ident) {
 			tool = "confluence"
 		}
 		return []string{tool, "info", ident}

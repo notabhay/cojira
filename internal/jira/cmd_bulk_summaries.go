@@ -118,7 +118,7 @@ func runBulkUpdateSummaries(cmd *cobra.Command, _ []string) error {
 		}
 		output.EmitProgress(mode, quiet, idx+1, len(mappings), fmt.Sprintf("%s summary", m.Key), status)
 
-		if sleepSec > 0 {
+		if !dryRun && sleepSec > 0 {
 			time.Sleep(time.Duration(sleepSec * float64(time.Second)))
 		}
 	}

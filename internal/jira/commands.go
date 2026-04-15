@@ -22,6 +22,12 @@ func NewJiraCmd() *cobra.Command {
 	cmd.AddCommand(
 		NewInfoCmd(),
 		NewGetCmd(),
+		NewProjectsCmd(),
+		NewUsersCmd(),
+		NewAssignCmd(),
+		NewCommentCmd(),
+		NewAttachmentCmd(),
+		NewLinkCmd(),
 		NewUpdateCmd(),
 		NewTransitionCmd(),
 		NewTransitionsCmd(),

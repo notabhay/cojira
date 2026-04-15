@@ -2,7 +2,9 @@ package jira
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -74,7 +76,7 @@ func runSyncFromDir(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Find matching directories.
-	matches, err := filepath.Glob(filepath.Join(root, pattern))
+	matches, err := findTicketDirs(root, pattern)
 	if err != nil {
 		return err
 	}
@@ -277,4 +279,66 @@ func runSyncFromDir(cmd *cobra.Command, _ []string) error {
 		return &cerrors.CojiraError{ExitCode: 1}
 	}
 	return nil
+}
+
+func findTicketDirs(root, pattern string) ([]string, error) {
+	if !strings.Contains(pattern, "**") {
+		return filepath.Glob(filepath.Join(root, pattern))
+	}
+
+	pattern = filepath.ToSlash(filepath.Clean(pattern))
+	root = filepath.Clean(root)
+	var matches []string
+	err := filepath.WalkDir(root, func(candidate string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, candidate)
+		if err != nil || rel == "." {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if matchRecursivePattern(pattern, rel) {
+			matches = append(matches, candidate)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return matches, nil
+}
+
+func matchRecursivePattern(pattern, candidate string) bool {
+	patternSegs := strings.Split(pathpkg.Clean(pattern), "/")
+	candidateSegs := strings.Split(pathpkg.Clean(candidate), "/")
+	return matchRecursiveSegments(patternSegs, candidateSegs)
+}
+
+func matchRecursiveSegments(patternSegs, candidateSegs []string) bool {
+	if len(patternSegs) == 0 {
+		return len(candidateSegs) == 0
+	}
+	if patternSegs[0] == "**" {
+		if len(patternSegs) == 1 {
+			return true
+		}
+		for i := 0; i <= len(candidateSegs); i++ {
+			if matchRecursiveSegments(patternSegs[1:], candidateSegs[i:]) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(candidateSegs) == 0 {
+		return false
+	}
+	matched, err := pathpkg.Match(patternSegs[0], candidateSegs[0])
+	if err != nil || !matched {
+		return false
+	}
+	return matchRecursiveSegments(patternSegs[1:], candidateSegs[1:])
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/notabhay/cojira/internal/assets"
 	"github.com/notabhay/cojira/internal/cli"
@@ -12,20 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// bootstrapAssets is the list of (embedded path, relative output path) pairs.
-var bootstrapAssets = []struct{ src, dst string }{
-	{"COJIRA-BOOTSTRAP.md", "COJIRA-BOOTSTRAP.md"},
-	{"env.example", ".env.example"},
-	{"examples/README.md", "examples/README.md"},
-	{"examples/confluence-batch-config.json", "examples/confluence-batch-config.json"},
-	{"examples/confluence-page-content.html", "examples/confluence-page-content.html"},
-	{"examples/jira-batch-config.json", "examples/jira-batch-config.json"},
-	{"examples/jira-bulk-summaries.csv", "examples/jira-bulk-summaries.csv"},
-	{"examples/jira-bulk-summaries.json", "examples/jira-bulk-summaries.json"},
-	{"examples/jira-create-payload.json", "examples/jira-create-payload.json"},
-	{"examples/jira-update-payload.json", "examples/jira-update-payload.json"},
-	{"examples/cojira-project.json", "examples/cojira-project.json"},
-}
+const (
+	workspacePromptBlockStart = "<!-- COJIRA:BEGIN -->"
+	workspacePromptBlockEnd   = "<!-- COJIRA:END -->"
+)
 
 // readAsset reads an embedded asset from the assets FS.
 func readAsset(name string) (string, error) {
@@ -58,90 +49,117 @@ func writeTextFile(path string, content string, force bool) (string, error) {
 	return "written", nil
 }
 
+func writeWorkspacePromptFile(path string, content string) (string, error) {
+	block := workspacePromptBlockStart + "\n" + strings.TrimSpace(content) + "\n" + workspacePromptBlockEnd + "\n"
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(path, []byte(block), 0o644); err != nil {
+			return "", err
+		}
+		return "written", nil
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("path exists and is not a file: %s", path)
+	}
+
+	existingBytes, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	existing := string(existingBytes)
+
+	start := strings.Index(existing, workspacePromptBlockStart)
+	end := strings.Index(existing, workspacePromptBlockEnd)
+	if start >= 0 && end >= start {
+		end += len(workspacePromptBlockEnd)
+		updated := existing[:start] + block + existing[end:]
+		if updated == existing {
+			return "skipped", nil
+		}
+		if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+			return "", err
+		}
+		return "merged", nil
+	}
+
+	trimmed := strings.TrimRight(existing, "\n")
+	if trimmed == "" {
+		trimmed = block[:len(block)-1]
+	} else {
+		trimmed = trimmed + "\n\n" + strings.TrimRight(block, "\n")
+	}
+	updated := trimmed + "\n"
+	if updated == existing {
+		return "skipped", nil
+	}
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		return "", err
+	}
+	return "merged", nil
+}
+
 // NewBootstrapCmd returns the "cojira bootstrap" command.
 func NewBootstrapCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "bootstrap",
-		Short:         "Write COJIRA-BOOTSTRAP.md, .env.example, and example templates into a directory",
+		Short:         "Merge cojira workspace guidance into AGENTS.md and CLAUDE.md",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE:          runBootstrap,
 	}
 	cli.AddOutputFlags(cmd, false)
-	cmd.Flags().String("output", "COJIRA-BOOTSTRAP.md", "Path for the bootstrap markdown file")
-	cmd.Flags().Bool("no-examples", false, "Do not write .env.example or examples/")
-	cmd.Flags().Bool("force", false, "Overwrite existing files")
-	cmd.Flags().Bool("stdout", false, "Print the bootstrap markdown to stdout (no files written)")
+	cmd.Flags().String("dir", ".", "Directory where AGENTS.md and CLAUDE.md should be merged")
 	return cmd
 }
 
 func runBootstrap(cmd *cobra.Command, _ []string) error {
 	cli.NormalizeOutputMode(cmd)
-
-	bootstrapMD, err := readAsset("COJIRA-BOOTSTRAP.md")
-	if err != nil {
-		return err
-	}
-
 	jsonOut := cli.IsJSON(cmd)
-	stdout, _ := cmd.Flags().GetBool("stdout")
-	if stdout {
-		if jsonOut {
-			env := output.BuildEnvelope(
-				true, "cojira", "bootstrap",
-				map[string]any{}, map[string]any{"stdout": bootstrapMD},
-				nil, nil, "", "", "", nil,
-			)
-			return output.PrintJSON(env)
-		}
-		fmt.Print(bootstrapMD)
-		return nil
-	}
-
-	outputPath, _ := cmd.Flags().GetString("output")
-	noExamples, _ := cmd.Flags().GetBool("no-examples")
-	force, _ := cmd.Flags().GetBool("force")
-
-	targetDir := filepath.Dir(outputPath)
-	if targetDir == "" || targetDir == "." {
+	targetDir, _ := cmd.Flags().GetString("dir")
+	targetDir = strings.TrimSpace(targetDir)
+	if targetDir == "" {
 		targetDir = "."
 	}
+	targetDir = filepath.Clean(targetDir)
 
 	type writeItem struct{ src, dst string }
-	writes := []writeItem{{"COJIRA-BOOTSTRAP.md", outputPath}}
-	if !noExamples {
-		for _, a := range bootstrapAssets[1:] {
-			writes = append(writes, writeItem{a.src, filepath.Join(targetDir, a.dst)})
-		}
+	writes := []writeItem{
+		{"workspace/AGENTS.md", filepath.Join(targetDir, "AGENTS.md")},
+		{"workspace/CLAUDE.md", filepath.Join(targetDir, "CLAUDE.md")},
 	}
 
 	wroteAny := false
 	var results []map[string]string
 
 	for _, w := range writes {
-		content := bootstrapMD
-		if w.src != "COJIRA-BOOTSTRAP.md" {
-			c, readErr := readAsset(w.src)
-			if readErr != nil {
-				if jsonOut {
-					errObj, _ := output.ErrorObj(cerrors.OpFailed,
-						fmt.Sprintf("Error writing %s: %v", w.dst, readErr),
-						"", "", nil)
-					env := output.BuildEnvelope(
-						false, "cojira", "bootstrap",
-						map[string]any{"path": w.dst},
-						nil, nil, []any{errObj}, "", "", "", nil,
-					)
-					_ = output.PrintJSON(env)
-					return &exitError{Code: 1}
-				}
-				fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", w.dst, readErr)
+		content, readErr := readAsset(w.src)
+		if readErr != nil {
+			if jsonOut {
+				errObj, _ := output.ErrorObj(cerrors.OpFailed,
+					fmt.Sprintf("Error writing %s: %v", w.dst, readErr),
+					"", "", nil)
+				env := output.BuildEnvelope(
+					false, "cojira", "bootstrap",
+					map[string]any{"path": w.dst},
+					nil, nil, []any{errObj}, "", "", "", nil,
+				)
+				_ = output.PrintJSON(env)
 				return &exitError{Code: 1}
 			}
-			content = c
+			fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", w.dst, readErr)
+			return &exitError{Code: 1}
 		}
 
-		status, writeErr := writeTextFile(w.dst, content, force)
+		var status string
+		var writeErr error
+		status, writeErr = writeWorkspacePromptFile(w.dst, content)
 		if writeErr != nil {
 			if jsonOut {
 				errObj, _ := output.ErrorObj(cerrors.OpFailed,
@@ -159,10 +177,14 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 			return &exitError{Code: 1}
 		}
 
-		if status == "written" {
+		if status == "written" || status == "merged" {
 			wroteAny = true
 			if !jsonOut {
-				fmt.Printf("[wrote] %s\n", w.dst)
+				label := "wrote"
+				if status == "merged" {
+					label = "merged"
+				}
+				fmt.Printf("[%s] %s\n", label, w.dst)
 			}
 		} else if !jsonOut {
 			fmt.Printf("[skip]  %s (already exists)\n", w.dst)
@@ -173,7 +195,7 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 	if jsonOut {
 		env := output.BuildEnvelope(
 			true, "cojira", "bootstrap",
-			map[string]any{"output": outputPath},
+			map[string]any{"dir": targetDir},
 			map[string]any{"items": results, "wrote_any": wroteAny},
 			nil, nil, "", "", "", nil,
 		)

@@ -207,6 +207,23 @@ func TestSetPageLabel(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestGetPageLabels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/content/12345/label", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"name": "archived"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetPageLabels("12345", 25, 0)
+	require.NoError(t, err)
+	assert.NotNil(t, result["results"])
+}
+
 func TestGetChildren(t *testing.T) {
 	callCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -279,6 +296,40 @@ func TestListSpaces(t *testing.T) {
 	result, err := c.ListSpaces(25, 0)
 	require.NoError(t, err)
 	assert.NotNil(t, result["results"])
+}
+
+func TestMovePage(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch callCount {
+		case 1:
+			assert.Equal(t, "/rest/api/content/12345", r.URL.Path)
+			assert.Equal(t, "version,body.storage", r.URL.Query().Get("expand"))
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":    "12345",
+				"title": "Child",
+				"version": map[string]any{
+					"number": 2,
+				},
+				"body": map[string]any{
+					"storage": map[string]any{"value": "<p>body</p>"},
+				},
+			})
+		case 2:
+			assert.Equal(t, "/rest/api/content/12345", r.URL.Path)
+			assert.Equal(t, "PUT", r.Method)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "12345"})
+		default:
+			t.Fatalf("unexpected request %d", callCount)
+		}
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.MovePage("12345", "99999")
+	require.NoError(t, err)
+	assert.Equal(t, "12345", result["id"])
 }
 
 func TestBaseURLTrailingSlashStripped(t *testing.T) {

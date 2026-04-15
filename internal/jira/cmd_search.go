@@ -21,6 +21,8 @@ func NewSearchCmd() *cobra.Command {
 	}
 	cmd.Flags().Int("limit", 20, "Max results (default: 20)")
 	cmd.Flags().Int("start", 0, "Start offset (default: 0)")
+	cmd.Flags().Int("page-size", 100, "Page size when fetching --all results (default: 100)")
+	cmd.Flags().Bool("all", false, "Fetch all pages of results")
 	cmd.Flags().String("fields", "", "Fields to request (comma-separated)")
 	cmd.Flags().String("expand", "", "Expand options (comma-separated)")
 	cmd.Flags().StringP("output", "o", "", "Output file (default: stdout)")
@@ -38,9 +40,15 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	jql := applyDefaultScope(cmd, args[0])
 	limit, _ := cmd.Flags().GetInt("limit")
 	start, _ := cmd.Flags().GetInt("start")
+	pageSize, _ := cmd.Flags().GetInt("page-size")
+	fetchAll, _ := cmd.Flags().GetBool("all")
 	fields, _ := cmd.Flags().GetString("fields")
 	expand, _ := cmd.Flags().GetString("expand")
 	outputFile, _ := cmd.Flags().GetString("output")
+
+	if pageSize <= 0 {
+		pageSize = 100
+	}
 
 	data, err := client.Search(jql, limit, start, fields, expand)
 	if err != nil {
@@ -48,6 +56,36 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	}
 
 	issues, _ := data["issues"].([]any)
+	total := intFromAny(data["total"], len(issues))
+	if fetchAll {
+		collected := make([]any, 0, len(issues))
+		collected = append(collected, issues...)
+		nextStart := start + len(issues)
+		for nextStart < total {
+			pageLimit := pageSize
+			if limit > 0 {
+				remaining := limit - len(collected)
+				if remaining <= 0 {
+					break
+				}
+				if remaining < pageLimit {
+					pageLimit = remaining
+				}
+			}
+			page, err := client.Search(jql, pageLimit, nextStart, fields, expand)
+			if err != nil {
+				return err
+			}
+			pageIssues, _ := page["issues"].([]any)
+			if len(pageIssues) == 0 {
+				break
+			}
+			collected = append(collected, pageIssues...)
+			nextStart += len(pageIssues)
+		}
+		data["issues"] = collected
+		issues = collected
+	}
 
 	if outputFile != "" {
 		jsonBytes, _ := json.MarshalIndent(data, "", "  ")
@@ -58,7 +96,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 			return output.PrintJSON(output.BuildEnvelope(
 				true, "jira", "search",
 				map[string]any{"jql": jql},
-				map[string]any{"saved_to": outputFile, "total": intFromAny(data["total"], len(issues))},
+				map[string]any{"saved_to": outputFile, "total": total, "fetched": len(issues), "all": fetchAll},
 				nil, nil, "", "", "", nil,
 			))
 		}
@@ -73,7 +111,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	if mode == "json" {
 		return output.PrintJSON(output.BuildEnvelope(
 			true, "jira", "search",
-			map[string]any{"jql": jql, "start": start, "limit": limit},
+			map[string]any{"jql": jql, "start": start, "limit": limit, "all": fetchAll},
 			data, nil, nil, "", "", "", nil,
 		))
 	}
@@ -88,11 +126,19 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	}
 
 	if mode == "summary" {
-		fmt.Printf("Found %d issue(s) for JQL: %s\n", len(issues), jql)
+		if fetchAll {
+			fmt.Printf("Found %d of %d issue(s) for JQL: %s\n", len(issues), total, jql)
+		} else {
+			fmt.Printf("Found %d issue(s) for JQL: %s\n", len(issues), jql)
+		}
 		return nil
 	}
 
-	fmt.Printf("Found %d issue(s):\n\n", len(issues))
+	if fetchAll {
+		fmt.Printf("Found %d of %d issue(s):\n\n", len(issues), total)
+	} else {
+		fmt.Printf("Found %d issue(s):\n\n", len(issues))
+	}
 	for _, i := range issues {
 		issue, ok := i.(map[string]any)
 		if !ok {

@@ -1,7 +1,9 @@
 package confluence
 
 import (
+	"encoding/xml"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -58,6 +60,17 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	if !strings.Contains(content, "<") || !strings.Contains(content, ">") {
 		warnings = append(warnings, "Content does not look like XHTML; ensure Confluence storage format.")
 	}
+	if err := validateStorageXHTML(content); err != nil {
+		if mode == "json" {
+			errObj, _ := output.ErrorObj(cerrors.InvalidJSON, err.Error(), "", "", nil)
+			return output.PrintJSON(output.BuildEnvelope(
+				false, "confluence", "validate",
+				map[string]any{"file": filePath},
+				nil, warnings, []any{errObj}, "", "", "", nil,
+			))
+		}
+		return &cerrors.CojiraError{Code: cerrors.InvalidJSON, Message: err.Error(), ExitCode: 1}
+	}
 
 	if mode == "json" {
 		return output.PrintJSON(output.BuildEnvelope(
@@ -81,4 +94,26 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+func validateStorageXHTML(content string) error {
+	wrapped := `<root xmlns:ac="http://atlassian.com/content" xmlns:ri="http://atlassian.com/resource/identifier" xmlns:atlassian="http://atlassian.com/content">` + content + `</root>`
+	decoder := xml.NewDecoder(strings.NewReader(wrapped))
+	decoder.Entity = map[string]string{
+		"nbsp":   "\u00a0",
+		"ndash":  "\u2013",
+		"mdash":  "\u2014",
+		"hellip": "\u2026",
+		"copy":   "\u00a9",
+		"reg":    "\u00ae",
+		"trade":  "\u2122",
+	}
+	for {
+		if _, err := decoder.Token(); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("storage XHTML is not well-formed: %w", err)
+		}
+	}
 }

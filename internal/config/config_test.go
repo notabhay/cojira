@@ -170,3 +170,27 @@ func TestNullSectionsAreValid(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, loaded)
 }
+
+func TestLoadProjectConfigMergesAncestorConfigs(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "a", "b")
+	require.NoError(t, os.MkdirAll(child, 0o755))
+
+	rootCfg := filepath.Join(root, ConfigFilename)
+	childCfg := filepath.Join(root, "a", ConfigFilename)
+	require.NoError(t, os.WriteFile(rootCfg, []byte(`{"jira":{"default_project":"ROOT"},"aliases":{"base":"jira whoami"}}`), 0o644))
+	require.NoError(t, os.WriteFile(childCfg, []byte(`{"jira":{"default_jql_scope":"project = CHILD"},"aliases":{"local":"jira info PROJ-1"}}`), 0o644))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(child))
+	defer func() { _ = os.Chdir(origDir) }()
+
+	loaded, err := LoadProjectConfig(nil)
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	assert.Equal(t, "ROOT", loaded.GetValue([]string{"jira", "default_project"}, nil))
+	assert.Equal(t, "project = CHILD", loaded.GetValue([]string{"jira", "default_jql_scope"}, nil))
+	assert.Equal(t, "jira whoami", loaded.GetAlias("base"))
+	assert.Equal(t, "jira info PROJ-1", loaded.GetAlias("local"))
+}

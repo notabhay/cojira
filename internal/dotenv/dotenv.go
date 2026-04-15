@@ -73,10 +73,13 @@ func DefaultSearchPaths() []string {
 	return paths
 }
 
-// LoadIfPresent loads the first existing .env file from paths.
-// It sets environment variables that are not already set.
-// Returns the path of the loaded file, or empty string if none was loaded.
+// LoadIfPresent loads every existing .env file from paths in order.
+// It sets environment variables that are not already set, so earlier files
+// win over later files and process env always has highest precedence.
+// Returns the first path that was successfully loaded, or empty string if none
+// were loaded.
 func LoadIfPresent(paths []string) string {
+	firstLoaded := ""
 	for _, p := range paths {
 		info, err := os.Stat(p)
 		if err != nil || info.IsDir() {
@@ -93,9 +96,11 @@ func LoadIfPresent(paths []string) string {
 			}
 			_ = os.Setenv(key, value)
 		}
-		return p
+		if firstLoaded == "" {
+			firstLoaded = p
+		}
 	}
-	return ""
+	return firstLoaded
 }
 
 // placeholders is the set of known template placeholder values.

@@ -102,26 +102,7 @@ func DefaultConfigPaths() []string {
 	return []string{filepath.Join(cwd, ConfigFilename)}
 }
 
-// LoadProjectConfig searches for .cojira.json in the given paths (or default
-// paths if nil) and loads the first one found.
-// Returns (nil, nil) if no config file exists.
-func LoadProjectConfig(paths []string) (*ProjectConfig, error) {
-	if paths == nil {
-		paths = DefaultConfigPaths()
-	}
-
-	var configPath string
-	for _, p := range paths {
-		info, err := os.Stat(p)
-		if err == nil && !info.IsDir() {
-			configPath = p
-			break
-		}
-	}
-	if configPath == "" {
-		return nil, nil
-	}
-
+func parseConfigFile(configPath string) (*ProjectConfig, error) {
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, &ConfigError{
@@ -168,4 +149,85 @@ func LoadProjectConfig(paths []string) (*ProjectConfig, error) {
 	}
 
 	return &ProjectConfig{Path: configPath, Data: m}, nil
+}
+
+func discoverConfigPaths() []string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+
+	var dirs []string
+	for cur := cwd; ; cur = filepath.Dir(cur) {
+		dirs = append(dirs, cur)
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+	}
+
+	var paths []string
+	for i := len(dirs) - 1; i >= 0; i-- {
+		paths = append(paths, filepath.Join(dirs[i], ConfigFilename))
+	}
+	return paths
+}
+
+func mergeValue(dst any, src any) any {
+	dstMap, dstOK := dst.(map[string]any)
+	srcMap, srcOK := src.(map[string]any)
+	if !dstOK || !srcOK {
+		return src
+	}
+
+	merged := make(map[string]any, len(dstMap))
+	for k, v := range dstMap {
+		merged[k] = v
+	}
+	for k, v := range srcMap {
+		if existing, ok := merged[k]; ok {
+			merged[k] = mergeValue(existing, v)
+			continue
+		}
+		merged[k] = v
+	}
+	return merged
+}
+
+// LoadProjectConfig searches for .cojira.json in the given paths (or default
+// paths if nil) and loads the first one found.
+// Returns (nil, nil) if no config file exists.
+func LoadProjectConfig(paths []string) (*ProjectConfig, error) {
+	if paths == nil {
+		paths = discoverConfigPaths()
+		var merged map[string]any
+		nearestPath := ""
+		for _, p := range paths {
+			info, err := os.Stat(p)
+			if err != nil || info.IsDir() {
+				continue
+			}
+			cfg, err := parseConfigFile(p)
+			if err != nil {
+				return nil, err
+			}
+			if merged == nil {
+				merged = map[string]any{}
+			}
+			merged = mergeValue(merged, cfg.Data).(map[string]any)
+			nearestPath = p
+		}
+		if merged == nil {
+			return nil, nil
+		}
+		return &ProjectConfig{Path: nearestPath, Data: merged}, nil
+	}
+
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err == nil && !info.IsDir() {
+			return parseConfigFile(p)
+		}
+	}
+	return nil, nil
 }

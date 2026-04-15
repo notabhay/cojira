@@ -70,6 +70,10 @@ func TestJQLValueNeedsQuoting(t *testing.T) {
 	assert.Equal(t, `"High"`, JQLValue("High"))
 }
 
+func TestJQLValueEscapesQuotes(t *testing.T) {
+	assert.Equal(t, `"foo\"bar"`, JQLValue(`foo"bar`))
+}
+
 func TestStripJQLStrings(t *testing.T) {
 	result := StripJQLStrings(`project = "FOO" AND type = 'Bug'`)
 	assert.NotContains(t, result, "FOO")

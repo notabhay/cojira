@@ -141,7 +141,8 @@ func TestExistingRecoveryValuesUnchanged(t *testing.T) {
 	for _, code := range []string{ConfigMissingEnv, ConfigInvalid, HTTP401, HTTP403} {
 		recovery := DefaultRecovery(code)
 		require.NotNil(t, recovery)
-		assert.Equal(t, "cojira init", recovery["command"])
+		assert.Equal(t, ".env", recovery["path"])
+		assert.Equal(t, "~/.config/cojira/credentials", recovery["global_path"])
 		assert.Equal(t, true, recovery["requires_user"])
 	}
 }

@@ -3,7 +3,7 @@ MODULE  := github.com/notabhay/cojira
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "0.1.0")
 LDFLAGS := -ldflags "-X $(MODULE)/internal/version.Version=$(VERSION)"
 
-.PHONY: build test lint vet install clean
+.PHONY: build test lint vet install clean bundle-local
 
 build:
 	go build $(LDFLAGS) -o $(BINARY) .
@@ -37,3 +37,6 @@ build-windows:
 	GOOS=windows GOARCH=amd64 go build $(LDFLAGS) -o $(BINARY)-windows-amd64.exe .
 
 build-all: build build-linux build-linux-arm build-windows
+
+bundle-local:
+	./scripts/build_local_bundle.sh

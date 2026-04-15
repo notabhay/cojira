@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,7 +21,6 @@ import (
 
 const (
 	DefaultAPIVersion = "2"
-	DefaultUserAgent  = "cojira/0.1"
 	GreenhopperBase   = "/rest/greenhopper/1.0"
 	AgileBase         = "/rest/agile/1.0"
 )
@@ -64,8 +65,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 			Code:        cerrors.ConfigMissingEnv,
 			Message:     fmt.Sprintf("JIRA_BASE_URL is required. %s", cerrors.HintSetup()),
 			Hint:        cerrors.HintSetup(),
-			UserMessage: "I need your Jira URL to continue. Run `cojira init` and paste a Jira page URL.",
-			Recovery:    map[string]any{"action": "run", "command": "cojira init", "requires_user": true},
+			UserMessage: "I need your Jira URL in `.env` or `~/.config/cojira/credentials`. Please update the file directly instead of pasting it here.",
+			Recovery:    map[string]any{"action": "edit", "path": ".env", "global_path": "~/.config/cojira/credentials", "requires_user": true},
 			ExitCode:    2,
 		}
 	}
@@ -74,8 +75,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 			Code:        cerrors.ConfigMissingEnv,
 			Message:     fmt.Sprintf("JIRA_API_TOKEN is required. %s", cerrors.HintSetup()),
 			Hint:        cerrors.HintSetup(),
-			UserMessage: "I need your Jira API token to continue. Run `cojira init` and paste your token.",
-			Recovery:    map[string]any{"action": "run", "command": "cojira init", "requires_user": true},
+			UserMessage: "I need your Jira token in `.env` or `~/.config/cojira/credentials`. Please update the file directly instead of pasting it here.",
+			Recovery:    map[string]any{"action": "edit", "path": ".env", "global_path": "~/.config/cojira/credentials", "requires_user": true},
 			ExitCode:    2,
 		}
 	}
@@ -84,7 +85,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		cfg.APIVersion = DefaultAPIVersion
 	}
 	if cfg.UserAgent == "" {
-		cfg.UserAgent = DefaultUserAgent
+		cfg.UserAgent = defaultUserAgent()
 	}
 
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
@@ -117,7 +118,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		timeout:     cfg.Timeout,
 		retryConfig: cfg.RetryConfig,
 		debug:       cfg.Debug,
-		httpClient:  &http.Client{Timeout: cfg.Timeout},
+		httpClient:  buildHTTPClient(cfg.Timeout, cfg.VerifySSL),
 		headers:     headers,
 		auth:        auth,
 	}, nil
@@ -412,6 +413,118 @@ func (c *Client) CreateIssue(payload map[string]any) (map[string]any, error) {
 	return decodeJSON(resp)
 }
 
+// ListComments fetches comments for a Jira issue.
+func (c *Client) ListComments(issue string, limit, startAt int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("maxResults", fmt.Sprintf("%d", limit))
+	params.Set("startAt", fmt.Sprintf("%d", startAt))
+	resp, err := c.Request("GET", "/issue/"+issue+"/comment", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// AddComment adds a comment to a Jira issue.
+func (c *Client) AddComment(issue string, bodyText string) (map[string]any, error) {
+	body, err := json.Marshal(map[string]any{"body": bodyText})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.Request("POST", "/issue/"+issue+"/comment", body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// CreateIssueLink creates a relationship between two Jira issues.
+func (c *Client) CreateIssueLink(payload map[string]any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	resp, err := c.Request("POST", "/issueLink", body, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// AssignIssue updates the assignee on a Jira issue.
+func (c *Client) AssignIssue(issue string, payload map[string]any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	resp, err := c.Request("PUT", "/issue/"+issue+"/assignee", body, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// SearchUsers looks up users by query, falling back for older Jira variants.
+func (c *Client) SearchUsers(query string, limit int) ([]map[string]any, error) {
+	tryParams := []url.Values{
+		func() url.Values {
+			params := url.Values{}
+			params.Set("query", query)
+			params.Set("maxResults", fmt.Sprintf("%d", limit))
+			return params
+		}(),
+		func() url.Values {
+			params := url.Values{}
+			params.Set("username", query)
+			params.Set("maxResults", fmt.Sprintf("%d", limit))
+			return params
+		}(),
+	}
+
+	var lastErr error
+	for _, params := range tryParams {
+		resp, err := c.Request("GET", "/user/search", nil, params)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return decodeJSONArray(resp)
+	}
+
+	return nil, lastErr
+}
+
+// ListProjects returns visible Jira projects.
+func (c *Client) ListProjects() ([]map[string]any, error) {
+	resp, err := c.Request("GET", "/project", nil, nil)
+	if err == nil {
+		defer func() { _ = resp.Body.Close() }()
+		return decodeJSONArray(resp)
+	}
+
+	searchResp, searchErr := c.Request("GET", "/project/search", nil, nil)
+	if searchErr != nil {
+		return nil, err
+	}
+	defer func() { _ = searchResp.Body.Close() }()
+
+	data, decodeErr := decodeJSON(searchResp)
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
+	for _, key := range []string{"values", "results"} {
+		if arr, ok := data[key].([]any); ok {
+			return coerceJSONArray(arr), nil
+		}
+	}
+	return []map[string]any{}, nil
+}
+
 // ListFields returns all available Jira fields.
 func (c *Client) ListFields() ([]map[string]any, error) {
 	resp, err := c.Request("GET", "/field", nil, nil)
@@ -436,10 +549,180 @@ func (c *Client) GetMyself() (map[string]any, error) {
 	return decodeJSON(resp)
 }
 
+// ListAttachments returns attachment metadata from an issue.
+func (c *Client) ListAttachments(issue string) ([]map[string]any, error) {
+	data, err := c.GetIssue(issue, "attachment", "")
+	if err != nil {
+		return nil, err
+	}
+	fields, _ := data["fields"].(map[string]any)
+	arr, _ := fields["attachment"].([]any)
+	return coerceJSONArray(arr), nil
+}
+
+// UploadAttachment uploads a file attachment to a Jira issue.
+func (c *Client) UploadAttachment(issue, filePath string) (map[string]any, error) {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+
+	params := url.Values{}
+	resp, err := c.requestWithExtraHeaders("POST", c.restBase+"/issue/"+issue+"/attachments", body.Bytes(), params, http.Header{
+		"Content-Type":      {writer.FormDataContentType()},
+		"X-Atlassian-Token": {"no-check"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	items, err := decodeJSONArray(resp)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return map[string]any{}, nil
+	}
+	return items[0], nil
+}
+
+// DownloadAttachment downloads an attachment URL to disk.
+func (c *Client) DownloadAttachment(contentURL, outputPath string) error {
+	resp, err := c.requestWithExtraHeaders("GET", contentURL, nil, nil, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	out, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+
+	_, err = io.Copy(out, resp.Body)
+	return err
+}
+
 func decodeJSON(resp *http.Response) (map[string]any, error) {
 	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+func decodeJSONArray(resp *http.Response) ([]map[string]any, error) {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []map[string]any
+	if err := json.Unmarshal(body, &result); err == nil {
+		return result, nil
+	}
+
+	var wrapper map[string]any
+	if err := json.Unmarshal(body, &wrapper); err == nil {
+		for _, key := range []string{"values", "results"} {
+			if arr, ok := wrapper[key].([]any); ok {
+				return coerceJSONArray(arr), nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("expected JSON array response")
+}
+
+func coerceJSONArray(items []any) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if m, ok := item.(map[string]any); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (c *Client) requestWithExtraHeaders(method, requestURL string, body []byte, params url.Values, extraHeaders http.Header) (*http.Response, error) {
+	method = strings.ToUpper(method)
+
+	cfg := c.retryConfig
+	if method != "GET" && method != "HEAD" {
+		cfg.RetryExceptions = false
+	}
+
+	requestFn := func() (*http.Response, error) {
+		finalURL := requestURL
+		if len(params) > 0 {
+			finalURL = finalURL + "?" + params.Encode()
+		}
+
+		var bodyReader io.Reader
+		if body != nil {
+			bodyReader = bytes.NewReader(body)
+		}
+
+		req, err := http.NewRequest(method, finalURL, bodyReader)
+		if err != nil {
+			return nil, err
+		}
+
+		for key, values := range c.headers {
+			for _, v := range values {
+				req.Header.Set(key, v)
+			}
+		}
+		for key, values := range extraHeaders {
+			req.Header.Del(key)
+			for _, v := range values {
+				req.Header.Add(key, v)
+			}
+		}
+
+		if c.auth != nil {
+			req.SetBasicAuth(c.auth.username, c.auth.password)
+		}
+
+		return c.httpClient.Do(req)
+	}
+
+	resp, err := httpclient.RequestWithRetry(requestFn, cfg, c.onRetry)
+	if err != nil {
+		if isTimeoutError(err) {
+			timeout := c.timeout.Seconds()
+			return nil, &cerrors.CojiraError{
+				Code:     cerrors.Timeout,
+				Message:  fmt.Sprintf("Request timed out: %s %s", method, path(requestURL)),
+				Hint:     cerrors.HintTimeout(&timeout),
+				ExitCode: 1,
+			}
+		}
+		return nil, &cerrors.CojiraError{
+			Code:     cerrors.HTTPError,
+			Message:  fmt.Sprintf("Network error: %v", err),
+			ExitCode: 1,
+		}
+	}
+
+	return c.handleResponse(resp, method, requestURL)
 }

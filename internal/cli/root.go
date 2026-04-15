@@ -32,7 +32,7 @@ Tools:
   doctor       Pre-flight config/connectivity checks
   init         Interactive setup wizard for humans
   plan         Preview a command without applying changes
-  bootstrap    Write COJIRA-BOOTSTRAP.md and example templates
+  bootstrap    Merge cojira guidance into AGENTS.md and CLAUDE.md
   confluence   Confluence page management
   jira         Jira issue management
 
@@ -83,7 +83,7 @@ func tryExpandAlias(tool string, rest []string, depth int) []string {
 	}
 
 	dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
-	projCfg, err := config.LoadProjectConfig(config.DefaultConfigPaths())
+	projCfg, err := config.LoadProjectConfig(nil)
 	if err != nil || projCfg == nil {
 		return nil
 	}

@@ -33,6 +33,8 @@ Environment variables:
 	cmd.AddCommand(NewInfoCmd())
 	cmd.AddCommand(NewGetCmd())
 	cmd.AddCommand(NewFindCmd())
+	cmd.AddCommand(NewSpacesCmd())
+	cmd.AddCommand(NewLabelsCmd())
 	cmd.AddCommand(NewTreeCmd())
 	cmd.AddCommand(NewRenameCmd())
 	cmd.AddCommand(NewCreateCmd())

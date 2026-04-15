@@ -349,20 +349,12 @@ func applySetOp(field, op, value string, fields, currentFields map[string]any) e
 	}
 
 	if field == "priority" && op == OpSet {
-		fields[field] = map[string]any{"name": value}
+		fields[field] = keyedObjectValue(value, "name")
 		return nil
 	}
 
-	if field == "assignee" && op == OpSet {
-		v := strings.TrimSpace(value)
-		lower := strings.ToLower(v)
-		if lower == "null" || lower == "none" || v == "" {
-			fields[field] = nil
-		} else if strings.HasPrefix(v, "accountId:") {
-			fields[field] = map[string]any{"accountId": strings.SplitN(v, ":", 2)[1]}
-		} else {
-			fields[field] = map[string]any{"accountId": v}
-		}
+	if (field == "assignee" || field == "reporter") && op == OpSet {
+		fields[field] = coerceUserFieldValue(value)
 		return nil
 	}
 
@@ -388,6 +380,11 @@ func applySetOp(field, op, value string, fields, currentFields map[string]any) e
 		return nil
 	}
 
+	if field == "labels" && op == OpSet {
+		fields[field] = splitCSVStrings(value)
+		return nil
+	}
+
 	if (field == "components" || field == "versions" || field == "fixVersions") && (op == OpListAppend || op == OpListRemove) {
 		cur := currentFields[field]
 		curSlice, ok := cur.([]any)
@@ -409,6 +406,26 @@ func applySetOp(field, op, value string, fields, currentFields map[string]any) e
 			return err
 		}
 		fields[field] = result
+		return nil
+	}
+
+	if (field == "components" || field == "versions" || field == "fixVersions") && op == OpSet {
+		fields[field] = splitCSVNamedObjects(value)
+		return nil
+	}
+
+	if (field == "issuetype" || field == "resolution") && op == OpSet {
+		fields[field] = keyedObjectValue(value, "name")
+		return nil
+	}
+
+	if field == "project" && op == OpSet {
+		fields[field] = keyedProjectValue(value)
+		return nil
+	}
+
+	if field == "parent" && op == OpSet {
+		fields[field] = keyedParentValue(value)
 		return nil
 	}
 
@@ -437,4 +454,99 @@ func applySetOp(field, op, value string, fields, currentFields map[string]any) e
 	// Default '=' assignment.
 	fields[field] = value
 	return nil
+}
+
+func keyedObjectValue(value string, defaultKey string) map[string]any {
+	trimmed := strings.TrimSpace(value)
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) == 2 {
+		prefix := strings.ToLower(strings.TrimSpace(parts[0]))
+		raw := strings.TrimSpace(parts[1])
+		switch prefix {
+		case "id", "name", "key":
+			return map[string]any{prefix: raw}
+		}
+	}
+	return map[string]any{defaultKey: trimmed}
+}
+
+func coerceUserFieldValue(value string) any {
+	trimmed := strings.TrimSpace(value)
+	lower := strings.ToLower(trimmed)
+	if lower == "null" || lower == "none" || trimmed == "" {
+		return nil
+	}
+
+	if key, raw := splitTypedUserRef(trimmed); key != "" {
+		return map[string]any{key: raw}
+	}
+	if strings.Contains(trimmed, "@") {
+		return map[string]any{"emailAddress": trimmed}
+	}
+	return map[string]any{"name": trimmed}
+}
+
+func keyedProjectValue(value string) map[string]any {
+	trimmed := strings.TrimSpace(value)
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) == 2 {
+		prefix := strings.ToLower(strings.TrimSpace(parts[0]))
+		raw := strings.TrimSpace(parts[1])
+		if prefix == "id" || prefix == "key" {
+			return map[string]any{prefix: raw}
+		}
+	}
+	if isDigits(trimmed) {
+		return map[string]any{"id": trimmed}
+	}
+	return map[string]any{"key": trimmed}
+}
+
+func keyedParentValue(value string) map[string]any {
+	trimmed := strings.TrimSpace(value)
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) == 2 {
+		prefix := strings.ToLower(strings.TrimSpace(parts[0]))
+		raw := strings.TrimSpace(parts[1])
+		if prefix == "id" || prefix == "key" {
+			return map[string]any{prefix: raw}
+		}
+	}
+	if isDigits(trimmed) {
+		return map[string]any{"id": trimmed}
+	}
+	return map[string]any{"key": trimmed}
+}
+
+func isDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func splitCSVStrings(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func splitCSVNamedObjects(value string) []map[string]any {
+	parts := splitCSVStrings(value)
+	out := make([]map[string]any, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, map[string]any{"name": part})
+	}
+	return out
 }

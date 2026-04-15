@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_VERSION="v0.1.4"
+DEFAULT_VERSION="v0.3.0"
 DEFAULT_GITHUB_REPO="notabhay/cojira"
-DEFAULT_BOOTSTRAP_OUT="/tmp/cojira/COJIRA-BOOTSTRAP.md"
 
 DEFAULT_GO_VERSION="1.22.0"
 DEFAULT_GO_BASE_URL="https://go.dev/dl"
@@ -19,6 +18,12 @@ die() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
+
+script_dir() {
+  local src
+  src="${BASH_SOURCE[0]}"
+  cd "$(dirname "$src")" && pwd
 }
 
 detect_os() {
@@ -39,6 +44,98 @@ detect_arch() {
     arm64 | aarch64) printf '%s' "arm64" ;;
     *) die "Unsupported architecture: ${uname_m}" ;;
   esac
+}
+
+bundled_binary_path() {
+  local root="$1"
+  local os arch
+  os="$(detect_os)"
+  arch="$(detect_arch)"
+
+  local candidates=(
+    "${root}/bin/cojira-${os}-${arch}"
+    "${root}/bin/cojira"
+  )
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [ -x "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+seed_env_file() {
+  local root="$1"
+
+  if [ -f "${root}/.env" ]; then
+    return 0
+  fi
+
+  cat > "${root}/.env" <<'EOF'
+# Confluence
+CONFLUENCE_BASE_URL=https://confluence.rakuten-it.com/confluence/
+CONFLUENCE_API_TOKEN=
+
+# Jira
+JIRA_BASE_URL=https://jira.rakuten-it.com/jira
+JIRA_API_TOKEN=
+EOF
+  chmod 0600 "${root}/.env" || true
+}
+
+cleanup_bundle_workspace() {
+  local root="$1"
+  local self_path="$2"
+
+  rm -rf "${root}/bin" "${root}/examples"
+  rm -f "${root}/.env.example" "${root}/COJIRA-BOOTSTRAP.md"
+  rm -f "${root}/cojira.zip"
+  rm -f "${root}"/cojira-*.zip
+  rm -f "${self_path}"
+}
+
+refresh_workspace_prompts() {
+  local bin_dst="$1"
+  local root="$2"
+
+  if [ ! -x "$bin_dst" ]; then
+    die "Installed binary not found: ${bin_dst}"
+  fi
+
+  log "Refreshing workspace prompt files in: ${root}"
+  (
+    cd "$root"
+    "$bin_dst" bootstrap
+  )
+}
+
+install_bundled_binary() {
+  local root="$1"
+  local install_dir="$2"
+  local self_path="$3"
+
+  local bundled_bin
+  bundled_bin="$(bundled_binary_path "$root")" || die "No bundled binary found for this platform in ${root}/bin"
+
+  mkdir -p "$install_dir"
+  local bin_dst="${install_dir}/cojira"
+
+  cp "$bundled_bin" "$bin_dst"
+  chmod 0755 "$bin_dst"
+
+  log "Installed bundled binary: ${bin_dst}"
+  "$bin_dst" --version
+
+  refresh_workspace_prompts "$bin_dst" "$root"
+  seed_env_file "$root"
+  cleanup_bundle_workspace "$root" "$self_path"
+
+  log ""
+  log "Next:"
+  log "  Open ${root}/.env, fill in the Jira and Confluence tokens, then tell your agent to verify setup."
 }
 
 ensure_go() {
@@ -73,7 +170,6 @@ ensure_go() {
   local tarball="${tmpdir}/${filename}"
   curl -fsSL --retry 3 --retry-delay 1 -o "$tarball" "$url" || die "Failed to download Go toolchain"
 
-  # The tarball contains a top-level "go/" directory.
   rm -rf "${go_install_dir}/go" 2>/dev/null || true
   tar -xzf "$tarball" -C "$go_install_dir" || die "Failed to extract Go toolchain"
 
@@ -81,7 +177,7 @@ ensure_go() {
   printf '%s' "$go_bin"
 }
 
-main() {
+install_from_remote_source() {
   need_cmd curl
   need_cmd tar
   need_cmd find
@@ -96,8 +192,8 @@ main() {
   local ref="${COJIRA_REF:-refs/tags/${version}}"
 
   local github_repo="${COJIRA_GITHUB_REPO:-$DEFAULT_GITHUB_REPO}"
-  local install_dir="${COJIRA_INSTALL_DIR:-${GOBIN:-$HOME/.local/bin}}"
-  local bootstrap_out="${COJIRA_BOOTSTRAP_OUT:-$DEFAULT_BOOTSTRAP_OUT}"
+  local install_dir="$1"
+  local bootstrap_root="$2"
 
   local tmpdir
   tmpdir="$(mktemp -d)"
@@ -124,22 +220,34 @@ main() {
   src_dir="$(dirname "$go_mod_path")"
 
   mkdir -p "$install_dir"
-  local bin_dst
-  bin_dst="${install_dir}/cojira"
+  local bin_dst="${install_dir}/cojira"
 
   log "Building cojira (${version}) with ${go_cmd}..."
   (cd "$src_dir" && CGO_ENABLED=0 "$go_cmd" build -trimpath -ldflags "-s -w -X github.com/notabhay/cojira/internal/version.Version=${version}" -o "$bin_dst" .) || die "Build failed"
 
   log "Installed: ${bin_dst}"
-  "${bin_dst}" --version
+  "$bin_dst" --version
 
-  mkdir -p "$(dirname "$bootstrap_out")"
-  log "Writing bootstrap guide + templates to: ${bootstrap_out}"
-  "${bin_dst}" bootstrap --output "${bootstrap_out}" --force
+  refresh_workspace_prompts "$bin_dst" "$bootstrap_root"
+  seed_env_file "$bootstrap_root"
 
   log ""
   log "Next:"
-  log "  Open ${bootstrap_out} and follow it to set up this workspace."
+  log "  Open ${bootstrap_root}/.env, fill in the Jira and Confluence tokens, then tell your agent to verify setup."
+}
+
+main() {
+  local root install_dir self_path
+  root="$(script_dir)"
+  self_path="${root}/$(basename "${BASH_SOURCE[0]}")"
+  install_dir="${COJIRA_INSTALL_DIR:-${GOBIN:-$HOME/.local/bin}}"
+
+  if bundled_binary_path "$root" >/dev/null 2>&1; then
+    install_bundled_binary "$root" "$install_dir" "$self_path"
+    return 0
+  fi
+
+  install_from_remote_source "$install_dir" "$root"
 }
 
 main "$@"

@@ -31,6 +31,8 @@ func JQLValue(value string) string {
 	if strings.HasPrefix(raw, "-") {
 		return raw
 	}
+	raw = strings.ReplaceAll(raw, `\`, `\\`)
+	raw = strings.ReplaceAll(raw, `"`, `\"`)
 	return fmt.Sprintf(`"%s"`, raw)
 }
 

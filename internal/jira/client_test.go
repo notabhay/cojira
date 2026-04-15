@@ -3,8 +3,11 @@ package jira
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -292,6 +295,136 @@ func TestListFields(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, fields, 2)
 	assert.Equal(t, "summary", fields[0]["id"])
+}
+
+func TestListComments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/comment", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total": 1,
+			"comments": []map[string]any{
+				{"id": "10", "body": "hello"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListComments("PROJ-123", 20, 0)
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), result["total"])
+}
+
+func TestAddComment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/comment", r.URL.Path)
+		w.WriteHeader(201)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "10"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.AddComment("PROJ-123", "hello")
+	require.NoError(t, err)
+	assert.Equal(t, "10", result["id"])
+}
+
+func TestCreateIssueLink(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/2/issueLink", r.URL.Path)
+		w.WriteHeader(201)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	err := c.CreateIssueLink(map[string]any{"type": map[string]any{"name": "Relates"}})
+	require.NoError(t, err)
+}
+
+func TestAssignIssue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PUT", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/assignee", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	err := c.AssignIssue("PROJ-123", map[string]any{"name": "jdoe"})
+	require.NoError(t, err)
+}
+
+func TestSearchUsers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/user/search", r.URL.Path)
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"displayName": "Jane Doe", "emailAddress": "jane@example.com"},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	users, err := c.SearchUsers("Jane", 20)
+	require.NoError(t, err)
+	require.Len(t, users, 1)
+	assert.Equal(t, "Jane Doe", users[0]["displayName"])
+}
+
+func TestListProjects(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/project", r.URL.Path)
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"key": "RAPTOR", "name": "Raptor"},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	projects, err := c.ListProjects()
+	require.NoError(t, err)
+	require.Len(t, projects, 1)
+	assert.Equal(t, "RAPTOR", projects[0]["key"])
+}
+
+func TestUploadAttachment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/attachments", r.URL.Path)
+		assert.Equal(t, "no-check", r.Header.Get("X-Atlassian-Token"))
+		assert.Contains(t, r.Header.Get("Content-Type"), "multipart/form-data")
+		w.WriteHeader(200)
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "55", "filename": "sample.txt"},
+		})
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.txt")
+	require.NoError(t, os.WriteFile(path, []byte("hello"), 0o644))
+
+	c := testClient(t, server)
+	result, err := c.UploadAttachment("PROJ-123", path)
+	require.NoError(t, err)
+	assert.Equal(t, "55", result["id"])
+}
+
+func TestDownloadAttachment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/files/sample.txt", r.URL.Path)
+		_, _ = io.WriteString(w, "hello")
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	outPath := filepath.Join(t.TempDir(), "sample.txt")
+	require.NoError(t, c.DownloadAttachment(server.URL+"/files/sample.txt", outPath))
+
+	data, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(data))
 }
 
 func TestGetBoardIssues(t *testing.T) {

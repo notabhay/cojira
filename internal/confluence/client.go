@@ -21,6 +21,7 @@ type ClientConfig struct {
 	BaseURL     string
 	Token       string
 	UserAgent   string
+	VerifySSL   bool
 	Timeout     time.Duration
 	RetryConfig httpclient.RetryConfig
 	Debug       bool
@@ -45,8 +46,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 			Code:        cerrors.ConfigMissingEnv,
 			Message:     fmt.Sprintf("CONFLUENCE_BASE_URL (or --base-url) is required. %s", cerrors.HintSetup()),
 			Hint:        cerrors.HintSetup(),
-			UserMessage: "I need your Confluence URL to continue. Run `cojira init` and paste a Confluence page URL.",
-			Recovery:    map[string]any{"action": "run", "command": "cojira init", "requires_user": true},
+			UserMessage: "I need your Confluence URL in `.env` or `~/.config/cojira/credentials`. Please update the file directly instead of pasting it here.",
+			Recovery:    map[string]any{"action": "edit", "path": ".env", "global_path": "~/.config/cojira/credentials", "requires_user": true},
 			ExitCode:    2,
 		}
 	}
@@ -57,15 +58,15 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 			Code:        cerrors.ConfigMissingEnv,
 			Message:     fmt.Sprintf("CONFLUENCE_API_TOKEN environment variable is required. %s", cerrors.HintSetup()),
 			Hint:        cerrors.HintSetup(),
-			UserMessage: "I need your Confluence API token to continue. Run `cojira init` and paste your token.",
-			Recovery:    map[string]any{"action": "run", "command": "cojira init", "requires_user": true},
+			UserMessage: "I need your Confluence token in `.env` or `~/.config/cojira/credentials`. Please update the file directly instead of pasting it here.",
+			Recovery:    map[string]any{"action": "edit", "path": ".env", "global_path": "~/.config/cojira/credentials", "requires_user": true},
 			ExitCode:    2,
 		}
 	}
 
 	userAgent := cfg.UserAgent
 	if userAgent == "" {
-		userAgent = "cojira/0.1"
+		userAgent = confluenceDefaultUserAgent()
 	}
 
 	baseURL = strings.TrimRight(baseURL, "/")
@@ -84,7 +85,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		timeout:     cfg.Timeout,
 		retryConfig: cfg.RetryConfig,
 		debug:       cfg.Debug,
-		httpClient:  &http.Client{Timeout: cfg.Timeout},
+		httpClient:  buildConfluenceHTTPClient(cfg.Timeout, cfg.VerifySSL),
 		headers:     headers,
 	}, nil
 }
@@ -310,6 +311,19 @@ func (c *Client) SetPageLabel(pageID, label string) error {
 	return nil
 }
 
+// GetPageLabels fetches labels applied to a page.
+func (c *Client) GetPageLabels(pageID string, limit, start int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("limit", fmt.Sprintf("%d", limit))
+	params.Set("start", fmt.Sprintf("%d", start))
+	resp, err := c.Request("GET", "/content/"+pageID+"/label", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
 // GetChildren fetches child pages for a given page ID (fully paginated).
 func (c *Client) GetChildren(pageID string, limit int) ([]map[string]any, error) {
 	if limit <= 0 {
@@ -394,8 +408,7 @@ func (c *Client) ListSpaces(limit, start int) (map[string]any, error) {
 
 // MovePage moves a Confluence page under a new parent.
 func (c *Client) MovePage(pageID, targetParentID string) (map[string]any, error) {
-	// First get the current page to get the version and title
-	page, err := c.GetPageByID(pageID, "version")
+	page, err := c.GetPageByID(pageID, "version,body.storage")
 	if err != nil {
 		return nil, err
 	}
@@ -406,14 +419,24 @@ func (c *Client) MovePage(pageID, targetParentID string) (map[string]any, error)
 		versionNum = n
 	}
 
+	ancestors := []map[string]any{}
+	if targetParentID != "" {
+		ancestors = []map[string]any{{"id": targetParentID}}
+	}
+
 	payload := map[string]any{
+		"id":    pageID,
 		"type":  "page",
 		"title": page["title"],
 		"version": map[string]any{
 			"number": versionNum + 1,
 		},
-		"ancestors": []map[string]any{
-			{"id": targetParentID},
+		"ancestors": ancestors,
+		"body": map[string]any{
+			"storage": map[string]any{
+				"value":          getNestedString(page, "body", "storage", "value"),
+				"representation": "storage",
+			},
 		},
 	}
 

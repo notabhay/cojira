@@ -7,6 +7,7 @@ import "embed"
 //   - COJIRA-BOOTSTRAP.md
 //   - env.example
 //   - examples/*
+//   - workspace/*
 //
-//go:embed COJIRA-BOOTSTRAP.md env.example examples/*
+//go:embed COJIRA-BOOTSTRAP.md env.example examples/* workspace/*
 var FS embed.FS

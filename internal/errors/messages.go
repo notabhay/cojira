@@ -4,8 +4,8 @@ import "strings"
 
 // userMessages maps error codes to user-friendly messages.
 var userMessages = map[string]string{
-	ConfigMissingEnv:    "Setup is incomplete. Run `cojira init` and paste your Jira/Confluence URL and token.",
-	ConfigInvalid:       "Your configuration looks invalid. Re-run `cojira init` or fix your config file.",
+	ConfigMissingEnv:    "Setup is incomplete. Update `.env` or `~/.config/cojira/credentials` manually, and do not paste tokens into chat.",
+	ConfigInvalid:       "Your configuration looks invalid. Fix `.env` or `~/.config/cojira/credentials` and try again.",
 	HTTP401:             "Your token doesn't have permission for this. Create a new token with the right access.",
 	HTTP403:             "Your token doesn't have permission for this. Create a new token with the right access.",
 	HTTP404:             "The URL returned 'not found'. Check that JIRA_BASE_URL includes any context path (e.g. /jira).",
@@ -53,11 +53,11 @@ func DefaultUserMessage(code string, message string) string {
 
 // recoveries maps error codes to recovery action descriptors.
 var recoveries = map[string]map[string]any{
-	ConfigMissingEnv:    {"action": "run", "command": "cojira init", "requires_user": true},
-	ConfigInvalid:       {"action": "run", "command": "cojira init", "requires_user": true},
-	HTTP401:             {"action": "run", "command": "cojira init", "requires_user": true},
-	HTTP403:             {"action": "run", "command": "cojira init", "requires_user": true},
-	HTTP404:             {"action": "run", "command": "cojira init", "requires_user": true},
+	ConfigMissingEnv:    {"action": "edit", "path": ".env", "global_path": "~/.config/cojira/credentials", "requires_user": true},
+	ConfigInvalid:       {"action": "edit", "path": ".env", "global_path": "~/.config/cojira/credentials", "requires_user": true},
+	HTTP401:             {"action": "edit", "path": ".env", "global_path": "~/.config/cojira/credentials", "requires_user": true},
+	HTTP403:             {"action": "edit", "path": ".env", "global_path": "~/.config/cojira/credentials", "requires_user": true},
+	HTTP404:             {"action": "edit", "path": ".env", "global_path": "~/.config/cojira/credentials", "requires_user": true},
 	HTTP429:             {"action": "retry", "hint": "wait a bit and retry"},
 	Timeout:             {"action": "retry", "flag": "--timeout 60"},
 	IdentUnresolved:     {"action": "retry", "hint": "use full URL or numeric ID"},

@@ -1,6 +1,8 @@
 package jira
 
 import (
+	"crypto/tls"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"github.com/notabhay/cojira/internal/cli"
 	"github.com/notabhay/cojira/internal/dotenv"
 	"github.com/notabhay/cojira/internal/httpclient"
+	"github.com/notabhay/cojira/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +37,7 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 	}
 	userAgent := strings.TrimSpace(os.Getenv("JIRA_USER_AGENT"))
 	if userAgent == "" {
-		userAgent = DefaultUserAgent
+		userAgent = defaultUserAgent()
 	}
 
 	rc := cli.BuildRetryConfig(cmd)
@@ -66,4 +69,19 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 // outside the jira package.
 func ClientFromCmd(cmd *cobra.Command) (*Client, error) {
 	return clientFromCmd(cmd)
+}
+
+func buildHTTPClient(timeout time.Duration, verifySSL bool) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if !verifySSL {
+		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+}
+
+func defaultUserAgent() string {
+	return "cojira/" + version.Version
 }

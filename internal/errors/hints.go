@@ -4,7 +4,7 @@ import "fmt"
 
 // HintSetup returns the hint for missing setup.
 func HintSetup() string {
-	return "Run 'cojira init' (interactive setup) or 'cojira bootstrap' (templates), or set env vars directly."
+	return "Use 'cojira bootstrap', then edit '.env' or '~/.config/cojira/credentials' manually. Do not paste tokens into chat."
 }
 
 // HintTimeout returns the hint for timeout errors.

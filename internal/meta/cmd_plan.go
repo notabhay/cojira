@@ -5,6 +5,7 @@ package meta
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -18,7 +19,7 @@ func NewPlanCmd(rootCmd *cobra.Command) *cobra.Command {
 		Long:  "Preview a cojira command without applying changes. Equivalent to adding --dry-run --diff.",
 		Args:  cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			planned := injectPlan(args)
+			planned := injectPlan(rootCmd, args)
 			if len(planned) == 0 {
 				fmt.Fprintln(os.Stderr, "Error: Provide a command to plan.")
 				return &exitError{Code: 2}
@@ -33,9 +34,9 @@ func NewPlanCmd(rootCmd *cobra.Command) *cobra.Command {
 	return cmd
 }
 
-// injectPlan inserts --plan after the first subcommand argument
+// injectPlan inserts --plan after the deepest matched subcommand
 // unless a plan/dry-run/preview/diff flag is already present.
-func injectPlan(args []string) []string {
+func injectPlan(rootCmd *cobra.Command, args []string) []string {
 	if len(args) == 0 {
 		return args
 	}
@@ -52,11 +53,44 @@ func injectPlan(args []string) []string {
 			return args
 		}
 	}
-	// Insert --plan after the first arg (the subcommand name).
+	insertAt := matchedCommandDepth(rootCmd, args)
+	if insertAt <= 0 {
+		insertAt = 1
+	}
 	result := make([]string, 0, len(args)+1)
-	result = append(result, args[0], "--plan")
-	result = append(result, args[1:]...)
+	result = append(result, args[:insertAt]...)
+	result = append(result, "--plan")
+	result = append(result, args[insertAt:]...)
 	return result
+}
+
+func matchedCommandDepth(rootCmd *cobra.Command, args []string) int {
+	if rootCmd == nil {
+		return 0
+	}
+	current := rootCmd
+	depth := 0
+	for _, token := range args {
+		if strings.HasPrefix(token, "-") {
+			break
+		}
+		var next *cobra.Command
+		for _, sub := range current.Commands() {
+			if sub.Hidden || sub.Name() == "help" || sub.Name() == "completion" {
+				continue
+			}
+			if sub.Name() == token || sub.HasAlias(token) {
+				next = sub
+				break
+			}
+		}
+		if next == nil {
+			break
+		}
+		current = next
+		depth++
+	}
+	return depth
 }
 
 // exitError is a simple error that carries an exit code.
@@ -71,4 +105,8 @@ func (e *exitError) Error() string {
 // ExitCode returns the exit code carried by this error.
 func (e *exitError) ExitCode() int {
 	return e.Code
+}
+
+func (e *exitError) Reported() bool {
+	return true
 }

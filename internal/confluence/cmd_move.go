@@ -116,8 +116,9 @@ func runMove(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Perform the move via the client's MovePage helper.
-	page, err := client.GetPageByID(pageID, "version,body.storage")
+	// Fetch the current page for a precise preview and final summary, then
+	// delegate the actual move implementation to the shared client helper.
+	page, err := client.GetPageByID(pageID, "version")
 	if err != nil {
 		if mode == "json" {
 			errObj, _ := output.ErrorObj(cerrors.MoveFailed, err.Error(), "", "", nil)
@@ -132,30 +133,8 @@ func runMove(cmd *cobra.Command, args []string) error {
 	}
 
 	title, _ := page["title"].(string)
-	body := getNestedString(page, "body", "storage", "value")
 	currentVersion := int(getNestedFloat(page, "version", "number"))
-
-	ancestors := []map[string]any{}
-	if parentID != "" {
-		ancestors = []map[string]any{{"id": parentID}}
-	}
-	payload := map[string]any{
-		"id":    pageID,
-		"type":  "page",
-		"title": title,
-		"version": map[string]any{
-			"number": currentVersion + 1,
-		},
-		"ancestors": ancestors,
-		"body": map[string]any{
-			"storage": map[string]any{
-				"value":          body,
-				"representation": "storage",
-			},
-		},
-	}
-
-	_, err = client.UpdatePage(pageID, payload)
+	_, err = client.MovePage(pageID, parentID)
 	if err != nil {
 		if mode == "json" {
 			errObj, _ := output.ErrorObj(cerrors.MoveFailed, err.Error(), "", "", nil)

@@ -83,6 +83,7 @@ func buildManifest(rootCmd *cobra.Command) map[string]any {
 			"Non-interactive by default (exit codes 0/1/2/3; 3=needs user interaction).",
 			"Safe-first: use --dry-run for bulk/batch before applying.",
 			"Confluence content is storage-format XHTML; never convert to Markdown.",
+			"During setup, have the user edit .env manually; do not ask them to paste tokens into chat.",
 		},
 		"env": map[string]any{
 			"confluence": map[string]any{
@@ -214,8 +215,10 @@ func agentPrompt(manifest map[string]any) string {
 	lines = append(lines, "")
 	lines = append(lines, "Safety rules:")
 	lines = append(lines, "- Never print or paste tokens.")
+	lines = append(lines, "- During setup, ask the user to edit `.env` manually. After they confirm, sync credentials to `~/.config/cojira/credentials`.")
 	lines = append(lines, "- Confluence page bodies are storage format XHTML; preserve <ac:...> and <ri:...> macros.")
 	lines = append(lines, "- Use --dry-run for bulk/batch operations before applying.")
+	lines = append(lines, "- Require double confirmation before dangerous actions such as bulk mutations, delete-missing applies, board config changes, archive/copy-tree, global credential edits, or file removals.")
 	lines = append(lines, "- Output modes: human, json, summary (one-line), auto (json when not a TTY).")
 	lines = append(lines, "- Mutating commands print one-line receipts unless --quiet; use --plan for previews.")
 	lines = append(lines, "- You run cojira on the user's behalf. Never show CLI commands, JQL, XHTML, or raw JSON to the user.")
@@ -301,16 +304,10 @@ func runDescribe(cmd *cobra.Command, rootCmd *cobra.Command) error {
 	cli.NormalizeOutputMode(cmd)
 
 	manifest := buildManifest(rootCmd)
-
-	agentPromptFlag, _ := cmd.Flags().GetBool("agent-prompt")
-	if agentPromptFlag || !cli.IsJSON(cmd) {
-		fmt.Println(agentPrompt(manifest))
-		return nil
-	}
-
 	withContext, _ := cmd.Flags().GetBool("with-context")
+	var ctx map[string]any
 	if withContext {
-		ctx := buildContext(rootCmd)
+		ctx = buildContext(rootCmd)
 		manifest["context"] = ctx
 		configured, _ := ctx["configured_tools"].([]string)
 		if len(configured) > 0 && len(configured) < 2 {
@@ -322,10 +319,46 @@ func runDescribe(cmd *cobra.Command, rootCmd *cobra.Command) error {
 		}
 	}
 
+	agentPromptFlag, _ := cmd.Flags().GetBool("agent-prompt")
+	if agentPromptFlag || !cli.IsJSON(cmd) {
+		prompt := agentPrompt(manifest)
+		if agentPromptFlag && ctx != nil {
+			prompt += "\n\nLive context:\n" + agentPromptContext(ctx)
+		}
+		fmt.Println(prompt)
+		return nil
+	}
+
 	env := output.BuildEnvelope(
 		true, "cojira", "describe",
 		map[string]any{}, manifest,
 		nil, nil, "", "", "", nil,
 	)
 	return output.PrintJSON(env)
+}
+
+func agentPromptContext(ctx map[string]any) string {
+	if ctx == nil {
+		return "- No live context available."
+	}
+
+	var lines []string
+	setupNeeded, _ := ctx["setup_needed"].(bool)
+	lines = append(lines, fmt.Sprintf("- Setup needed: %t", setupNeeded))
+	if configured, ok := ctx["configured_tools"].([]string); ok && len(configured) > 0 {
+		lines = append(lines, "- Configured tools: "+strings.Join(configured, ", "))
+	}
+	if currentUser, ok := ctx["current_user"].(map[string]any); ok {
+		for name, raw := range currentUser {
+			user, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			displayName, _ := user["displayName"].(string)
+			if displayName != "" {
+				lines = append(lines, fmt.Sprintf("- %s user: %s", name, displayName))
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
 }

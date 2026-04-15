@@ -26,8 +26,13 @@ func TestParseShowJira(t *testing.T) {
 	assert.Equal(t, []string{"jira", "info", "PROJ-123"}, result)
 }
 
-func TestParseShowConfluenceNumeric(t *testing.T) {
+func TestParseShowNumericDefaultsToJira(t *testing.T) {
 	result := parseIntent("show 12345")
+	assert.Equal(t, []string{"jira", "info", "12345"}, result)
+}
+
+func TestParseShowConfluencePageNumeric(t *testing.T) {
+	result := parseIntent("show page 12345")
 	assert.Equal(t, []string{"confluence", "info", "12345"}, result)
 }
 
@@ -60,8 +65,9 @@ func TestParseUnknownReturnsNil(t *testing.T) {
 }
 
 func TestLooksLikeConfluence(t *testing.T) {
-	assert.True(t, looksLikeConfluence("12345"))
-	assert.True(t, looksLikeConfluence("https://confluence.example.com/pages/123"))
-	assert.True(t, looksLikeConfluence("https://example.com/wiki/spaces/ENG"))
-	assert.False(t, looksLikeConfluence("PROJ-123"))
+	assert.False(t, looksLikeConfluence("show 12345", "12345"))
+	assert.True(t, looksLikeConfluence("show confluence page 12345", "12345"))
+	assert.True(t, looksLikeConfluence("show https://confluence.example.com/pages/123", "https://confluence.example.com/pages/123"))
+	assert.True(t, looksLikeConfluence("show https://example.com/wiki/spaces/ENG", "https://example.com/wiki/spaces/ENG"))
+	assert.False(t, looksLikeConfluence("show PROJ-123", "PROJ-123"))
 }

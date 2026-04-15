@@ -21,6 +21,9 @@ func NewFindCmd() *cobra.Command {
 	}
 	cmd.Flags().StringP("space", "s", "", "Limit to space")
 	cmd.Flags().IntP("limit", "l", 20, "Max results")
+	cmd.Flags().Int("start", 0, "Start offset (default: 0)")
+	cmd.Flags().Int("page-size", 100, "Page size when fetching --all results (default: 100)")
+	cmd.Flags().Bool("all", false, "Fetch all pages of results")
 	cli.AddOutputFlags(cmd, true)
 	cli.AddHTTPRetryFlags(cmd)
 	return cmd
@@ -40,6 +43,12 @@ func runFind(cmd *cobra.Command, args []string) error {
 		space = defaultSpace(cfgData)
 	}
 	limit, _ := cmd.Flags().GetInt("limit")
+	start, _ := cmd.Flags().GetInt("start")
+	pageSize, _ := cmd.Flags().GetInt("page-size")
+	fetchAll, _ := cmd.Flags().GetBool("all")
+	if pageSize <= 0 {
+		pageSize = 100
+	}
 
 	// Build CQL query.
 	var cql string
@@ -54,12 +63,16 @@ func runFind(cmd *cobra.Command, args []string) error {
 	if isCQL {
 		cql = query
 	} else if space != "" {
-		cql = fmt.Sprintf(`space=%s AND title~"%s"`, space, query)
+		cql = fmt.Sprintf(`space="%s" AND title~"%s"`, escapeCQLString(space), escapeCQLString(query))
 	} else {
-		cql = fmt.Sprintf(`title~"%s"`, query)
+		cql = fmt.Sprintf(`title~"%s"`, escapeCQLString(query))
 	}
 
-	data, err := client.CQL(cql, limit, 0)
+	initialLimit := limit
+	if fetchAll {
+		initialLimit = pageSize
+	}
+	data, err := client.CQL(cql, initialLimit, start)
 	if err != nil {
 		if mode == "json" {
 			errObj, _ := output.ErrorObj(cerrors.SearchFailed, err.Error(), "", "", nil)
@@ -74,6 +87,40 @@ func runFind(cmd *cobra.Command, args []string) error {
 	}
 
 	pages, _ := data["results"].([]any)
+	if fetchAll {
+		collected := make([]any, 0, len(pages))
+		collected = append(collected, pages...)
+		nextStart := start + len(pages)
+		for len(pages) > 0 {
+			if limit > 0 && len(collected) >= limit {
+				collected = collected[:limit]
+				break
+			}
+			pageLimit := pageSize
+			if limit > 0 {
+				remaining := limit - len(collected)
+				if remaining <= 0 {
+					break
+				}
+				if remaining < pageLimit {
+					pageLimit = remaining
+				}
+			}
+			page, err := client.CQL(cql, pageLimit, nextStart)
+			if err != nil {
+				return err
+			}
+			pageResults, _ := page["results"].([]any)
+			if len(pageResults) == 0 {
+				break
+			}
+			collected = append(collected, pageResults...)
+			nextStart += len(pageResults)
+			pages = pageResults
+		}
+		data["results"] = collected
+		pages = collected
+	}
 
 	if len(pages) == 0 {
 		if mode == "json" {
@@ -111,7 +158,7 @@ func runFind(cmd *cobra.Command, args []string) error {
 		}
 		return output.PrintJSON(output.BuildEnvelope(
 			true, "confluence", "find",
-			map[string]any{"query": query, "space": space, "cql": cql},
+			map[string]any{"query": query, "space": space, "cql": cql, "all": fetchAll, "start": start},
 			results, nil, nil, "", "", "", nil,
 		))
 	}
@@ -138,4 +185,11 @@ func runFind(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  %12v  [%s]  %v\n", content["id"], spaceKey, content["title"])
 	}
 	return nil
+}
+
+func escapeCQLString(value string) string {
+	v := strings.TrimSpace(value)
+	v = strings.ReplaceAll(v, `\`, `\\`)
+	v = strings.ReplaceAll(v, `"`, `\"`)
+	return v
 }
