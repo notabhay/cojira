@@ -1,0 +1,9 @@
+.git
+.github
+.idea
+.vscode
+dist
+cojira-*.zip
+*.test
+coverage.out
+tmp

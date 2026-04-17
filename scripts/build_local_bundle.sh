@@ -21,13 +21,29 @@ detect_arch() {
 }
 
 VERSION="${1:-$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo "v0.3.0")}"
-OS_NAME="$(detect_os)"
-ARCH_NAME="$(detect_arch)"
+OS_NAME="${2:-$(detect_os)}"
+ARCH_NAME="${3:-$(detect_arch)}"
 
 if [ "$OS_NAME" = "unsupported" ] || [ "$ARCH_NAME" = "unsupported" ]; then
   echo "Unsupported platform for local bundle build" >&2
   exit 1
 fi
+
+case "$OS_NAME" in
+  darwin | linux | windows) ;;
+  *)
+    echo "Unsupported target OS: ${OS_NAME}" >&2
+    exit 1
+    ;;
+esac
+
+case "$ARCH_NAME" in
+  amd64 | arm64) ;;
+  *)
+    echo "Unsupported target architecture: ${ARCH_NAME}" >&2
+    exit 1
+    ;;
+esac
 
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
@@ -35,12 +51,19 @@ trap 'rm -rf "$TMPDIR"' EXIT
 BUNDLE_ROOT="${TMPDIR}/cojira"
 mkdir -p "${BUNDLE_ROOT}/bin"
 
+OUTPUT_BINARY="cojira-${OS_NAME}-${ARCH_NAME}"
+if [ "$OS_NAME" = "windows" ]; then
+  OUTPUT_BINARY="${OUTPUT_BINARY}.exe"
+fi
+
 GOOS="${OS_NAME}" GOARCH="${ARCH_NAME}" CGO_ENABLED=0 \
   go -C "$REPO_ROOT" build -trimpath \
   -ldflags "-s -w -X ${MODULE}/internal/version.Version=${VERSION#v}" \
-  -o "${BUNDLE_ROOT}/bin/cojira-${OS_NAME}-${ARCH_NAME}" .
+  -o "${BUNDLE_ROOT}/bin/${OUTPUT_BINARY}" .
 
 cp "${REPO_ROOT}/install.sh" "${BUNDLE_ROOT}/install.sh"
+cp "${REPO_ROOT}/install.ps1" "${BUNDLE_ROOT}/install.ps1"
+cp "${REPO_ROOT}/.env.example" "${BUNDLE_ROOT}/.env.example"
 cp "${REPO_ROOT}/COJIRA-BOOTSTRAP.md" "${BUNDLE_ROOT}/COJIRA-BOOTSTRAP.md"
 
 OUTPUT_PATH="${REPO_ROOT}/cojira-${VERSION#v}-${OS_NAME}-${ARCH_NAME}.zip"

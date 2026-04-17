@@ -13,6 +13,8 @@ import (
 	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/httpclient"
 	"github.com/notabhay/cojira/internal/jira"
+	"github.com/notabhay/cojira/internal/logging"
+	"github.com/notabhay/cojira/internal/oauth"
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -44,7 +46,7 @@ func NewDoctorCmd() *cobra.Command {
 }
 
 func runDoctor(cmd *cobra.Command, _ []string) error {
-	dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
+	dotenv.LoadDefaultOnce()
 	cli.NormalizeOutputMode(cmd)
 	jsonOut := cli.IsJSON(cmd)
 
@@ -336,10 +338,27 @@ func checkJira(rc cli.RetryConfig) CheckResult {
 		apiVersion = "2"
 	}
 	authMode := strings.TrimSpace(os.Getenv("JIRA_AUTH_MODE"))
+	apiBaseURL := ""
 	verifySSL := toBool(os.Getenv("JIRA_VERIFY_SSL"), true)
 	userAgent := strings.TrimSpace(os.Getenv("JIRA_USER_AGENT"))
 	if userAgent == "" {
 		userAgent = "cojira/0.1"
+	}
+
+	if strings.EqualFold(authMode, "oauth2") {
+		resolved, err := oauth.ResolveAtlassianOAuth2(rc.Context, "jira", baseURL, "JIRA")
+		if err != nil {
+			errObj, _ := output.ErrorObj(cerrors.ConfigMissingEnv, err.Error(), cerrors.HintSetup(), "", nil)
+			return CheckResult{
+				OK:      false,
+				Name:    "jira",
+				Details: map[string]any{"configured": false, "base_url": baseURL},
+				Error:   errObj,
+			}
+		}
+		token = resolved.AccessToken
+		apiBaseURL = resolved.APIBaseURL
+		email = ""
 	}
 
 	if baseURL == "" || token == "" {
@@ -348,7 +367,11 @@ func checkJira(rc cli.RetryConfig) CheckResult {
 			missing = append(missing, "JIRA_BASE_URL")
 		}
 		if token == "" {
-			missing = append(missing, "JIRA_API_TOKEN")
+			if strings.EqualFold(authMode, "oauth2") {
+				missing = append(missing, "JIRA_OAUTH_ACCESS_TOKEN or JIRA_OAUTH_REFRESH_TOKEN")
+			} else {
+				missing = append(missing, "JIRA_API_TOKEN")
+			}
 		}
 		errObj, _ := output.ErrorObj(cerrors.ConfigMissingEnv,
 			fmt.Sprintf("Missing required env var(s): %s", strings.Join(missing, ", ")),
@@ -363,14 +386,18 @@ func checkJira(rc cli.RetryConfig) CheckResult {
 
 	client, err := jira.NewClient(jira.ClientConfig{
 		BaseURL:    baseURL,
+		APIBaseURL: apiBaseURL,
 		APIVersion: apiVersion,
 		Email:      email,
 		Token:      token,
 		AuthMode:   authMode,
 		VerifySSL:  verifySSL,
 		UserAgent:  userAgent,
+		Context:    rc.Context,
+		Logger:     logging.NewDebugLogger(rc.Debug, "jira"),
 		Timeout:    time.Duration(rc.Timeout * float64(time.Second)),
 		RetryConfig: httpclient.RetryConfig{
+			Context:           rc.Context,
 			Retries:           rc.Retries,
 			BaseDelay:         time.Duration(rc.RetryBaseDelay * float64(time.Second)),
 			MaxDelay:          time.Duration(rc.RetryMaxDelay * float64(time.Second)),
@@ -448,6 +475,24 @@ func jiraErrorResult(err error, baseURL string) CheckResult {
 func checkConfluence(rc cli.RetryConfig) CheckResult {
 	baseURL := strings.TrimSpace(os.Getenv("CONFLUENCE_BASE_URL"))
 	token := strings.TrimSpace(os.Getenv("CONFLUENCE_API_TOKEN"))
+	authMode := strings.TrimSpace(os.Getenv("CONFLUENCE_AUTH_MODE"))
+	apiVersion := strings.TrimSpace(os.Getenv("CONFLUENCE_API_VERSION"))
+	apiBaseURL := ""
+
+	if strings.EqualFold(authMode, "oauth2") {
+		resolved, err := oauth.ResolveAtlassianOAuth2(rc.Context, "confluence", baseURL, "CONFLUENCE")
+		if err != nil {
+			errObj, _ := output.ErrorObj(cerrors.ConfigMissingEnv, err.Error(), cerrors.HintSetup(), "", nil)
+			return CheckResult{
+				OK:      false,
+				Name:    "confluence",
+				Details: map[string]any{"configured": false, "base_url": baseURL},
+				Error:   errObj,
+			}
+		}
+		token = resolved.AccessToken
+		apiBaseURL = resolved.APIBaseURL
+	}
 
 	if baseURL == "" || token == "" {
 		var missing []string
@@ -455,7 +500,11 @@ func checkConfluence(rc cli.RetryConfig) CheckResult {
 			missing = append(missing, "CONFLUENCE_BASE_URL")
 		}
 		if token == "" {
-			missing = append(missing, "CONFLUENCE_API_TOKEN")
+			if strings.EqualFold(authMode, "oauth2") {
+				missing = append(missing, "CONFLUENCE_OAUTH_ACCESS_TOKEN or CONFLUENCE_OAUTH_REFRESH_TOKEN")
+			} else {
+				missing = append(missing, "CONFLUENCE_API_TOKEN")
+			}
 		}
 		errObj, _ := output.ErrorObj(cerrors.ConfigMissingEnv,
 			fmt.Sprintf("Missing required env var(s): %s", strings.Join(missing, ", ")),
@@ -469,10 +518,15 @@ func checkConfluence(rc cli.RetryConfig) CheckResult {
 	}
 
 	client, err := confluence.NewClient(confluence.ClientConfig{
-		BaseURL: baseURL,
-		Token:   token,
-		Timeout: time.Duration(rc.Timeout * float64(time.Second)),
+		BaseURL:    baseURL,
+		APIBaseURL: apiBaseURL,
+		APIVersion: apiVersion,
+		Token:      token,
+		Context:    rc.Context,
+		Logger:     logging.NewDebugLogger(rc.Debug, "confluence"),
+		Timeout:    time.Duration(rc.Timeout * float64(time.Second)),
 		RetryConfig: httpclient.RetryConfig{
+			Context:           rc.Context,
 			Retries:           rc.Retries,
 			BaseDelay:         time.Duration(rc.RetryBaseDelay * float64(time.Second)),
 			MaxDelay:          time.Duration(rc.RetryMaxDelay * float64(time.Second)),

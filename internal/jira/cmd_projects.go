@@ -83,12 +83,14 @@ func runProjects(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Projects (%d):\n\n", len(projects))
+	rows := make([][]string, 0, len(projects))
 	for _, project := range projects {
-		fmt.Printf("  %-12s %-16v %v\n",
-			project["key"],
-			project["projectTypeKey"],
-			project["name"],
-		)
+		rows = append(rows, []string{
+			normalizeMaybeString(project["key"]),
+			output.Truncate(normalizeMaybeString(project["projectTypeKey"]), 16),
+			output.Truncate(normalizeMaybeString(project["name"]), 56),
+		})
 	}
+	fmt.Println(output.TableString([]string{"KEY", "TYPE", "NAME"}, rows))
 	return nil
 }

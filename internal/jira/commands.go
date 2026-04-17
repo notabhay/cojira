@@ -16,14 +16,31 @@ func NewJiraCmd() *cobra.Command {
 
 	// Persistent flags available to all subcommands.
 	cmd.PersistentFlags().Bool("experimental", false, "Enable experimental commands (may use unsupported/internal Jira APIs)")
-	cli.AddHTTPRetryFlags(cmd)
+	cli.AddPersistentHTTPRetryFlags(cmd)
+	cli.AddPersistentHTTPCacheFlags(cmd)
 
 	// Register all subcommands.
 	cmd.AddCommand(
 		NewInfoCmd(),
 		NewGetCmd(),
+		NewDashboardCmd(),
+		NewDashboardsCmd(),
+		NewCurrentCmd(),
+		NewBranchCmd(),
+		NewCommitTemplateCmd(),
+		NewPRTitleCmd(),
+		NewFinishBranchCmd(),
+		NewBoardsCmd(),
+		NewGraphCmd(),
+		NewBlockedCmd(),
+		NewCriticalPathCmd(),
 		NewProjectsCmd(),
+		NewQueryCmd(),
+		NewMineCmd(),
+		NewRecentCmd(),
 		NewUsersCmd(),
+		NewHistoryCmd(),
+		NewDiffCmd(),
 		NewAssignCmd(),
 		NewCommentCmd(),
 		NewAttachmentCmd(),
@@ -32,15 +49,23 @@ func NewJiraCmd() *cobra.Command {
 		NewWorklogCmd(),
 		NewSprintCmd(),
 		NewDeleteCmd(),
+		NewUndoCmd(),
 		NewUpdateCmd(),
 		NewTransitionCmd(),
 		NewTransitionsCmd(),
 		NewSearchCmd(),
+		NewBoardViewCmd(),
 		NewBoardIssuesCmd(),
+		NewReportCmd(),
 		NewCreateCmd(),
+		NewTemplateCmd(),
+		NewCloneCmd(),
 		NewFieldsCmd(),
+		NewFieldValuesCmd(),
 		NewValidateCmd(),
 		NewWhoamiCmd(),
+		NewPollCmd(),
+		NewOfflineCmd(),
 		NewBatchCmd(),
 		NewBulkUpdateCmd(),
 		NewBulkTransitionCmd(),

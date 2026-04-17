@@ -28,6 +28,7 @@ func NewBatchCmd() *cobra.Command {
 	cmd.Flags().Bool("stdin", false, "Read operations as newline-delimited JSON from stdin")
 	cmd.Flags().Bool("dry-run", false, "Preview without changes")
 	cmd.Flags().Bool("plan", false, "Alias for --dry-run")
+	cmd.Flags().Int("concurrency", 1, "Number of concurrent operation workers (default: 1, max: 10)")
 	cmd.Flags().Float64("sleep", 0.0, "Delay between operations in seconds")
 	cli.AddOutputFlags(cmd, true)
 	cli.AddIdempotencyFlags(cmd)
@@ -44,6 +45,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 
 	useStdin, _ := cmd.Flags().GetBool("stdin")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	concurrency, _ := cmd.Flags().GetInt("concurrency")
 	sleepSec, _ := cmd.Flags().GetFloat64("sleep")
 	idemKey, _ := cmd.Flags().GetString("idempotency-key")
 	quiet, _ := cmd.Flags().GetBool("quiet")
@@ -133,6 +135,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	var items []map[string]any
 	successCount := 0
 	failureCount := 0
+	skippedCount := 0
 	var failures []failureEntry
 
 	if mode != "json" && !quiet && mode != "summary" {
@@ -145,9 +148,27 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	}
 
 	for idx, op := range operations {
+		if cli.ClampConcurrency(concurrency) > 1 {
+			break
+		}
 		opType, _ := op["op"].(string)
 		desc := ""
 		item := map[string]any{"op": opType, "ok": false}
+		childKey := ""
+		if idemKey != "" && !dryRun {
+			childKey = output.IdempotencyKey("jira.batch.item", idemKey, idx, op)
+			if idempotency.IsDuplicate(childKey) {
+				item["ok"] = true
+				item["skipped"] = true
+				item["resume_key"] = childKey
+				receipt := output.Receipt{OK: true, Message: fmt.Sprintf("Skipped already-completed item %d (%s)", idx+1, opType)}
+				item["receipt"] = receipt.Format()
+				items = append(items, item)
+				skippedCount++
+				output.EmitProgress(mode, quiet, idx+1, len(operations), stringOr(opType, "item"), "SKIPPED")
+				continue
+			}
+		}
 
 		var opErr error
 		switch opType {
@@ -252,6 +273,10 @@ func runBatch(cmd *cobra.Command, args []string) error {
 			failures = append(failures, failureEntry{key: stringOr(desc, opType), err: opErr.Error()})
 		} else {
 			item["ok"] = true
+			if childKey != "" {
+				item["resume_key"] = childKey
+				_ = idempotency.Record(childKey, stringOr(desc, opType))
+			}
 			r := output.Receipt{OK: true, DryRun: dryRun, Message: desc}
 			item["receipt"] = r.Format()
 			if mode != "json" && !quiet && mode != "summary" {
@@ -272,9 +297,193 @@ func runBatch(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if cli.ClampConcurrency(concurrency) > 1 {
+		type batchResult struct {
+			item    map[string]any
+			failure *failureEntry
+			skipped bool
+			success bool
+		}
+
+		results := cli.RunParallel(len(operations), concurrency, func(idx int) batchResult {
+			op := operations[idx]
+			opType, _ := op["op"].(string)
+			desc := ""
+			item := map[string]any{"op": opType, "ok": false}
+			childKey := ""
+			if idemKey != "" && !dryRun {
+				childKey = output.IdempotencyKey("jira.batch.item", idemKey, idx, op)
+				if idempotency.IsDuplicate(childKey) {
+					item["ok"] = true
+					item["skipped"] = true
+					item["resume_key"] = childKey
+					receipt := output.Receipt{OK: true, Message: fmt.Sprintf("Skipped already-completed item %d (%s)", idx+1, opType)}
+					item["receipt"] = receipt.Format()
+					return batchResult{item: item, skipped: true}
+				}
+			}
+
+			var opErr error
+			switch opType {
+			case "update":
+				issueVal, _ := op["issue"].(string)
+				issueID := ResolveIssueIdentifier(issueVal)
+				fileVal, _ := op["file"].(string)
+				filePath := filepath.Join(basePath, fileVal)
+				desc = fmt.Sprintf("update %s from %s", issueID, fileVal)
+				payload, e := readJSONFile(filePath)
+				if e != nil {
+					opErr = e
+					break
+				}
+				if dryRun {
+					fieldKeys := make([]string, 0)
+					if flds, ok := payload["fields"].(map[string]any); ok {
+						for k := range flds {
+							fieldKeys = append(fieldKeys, k)
+						}
+					}
+					issue, e := client.GetIssue(issueID, joinComma(fieldKeys), "")
+					if e != nil {
+						opErr = e
+						break
+					}
+					diffs := previewPayloadDiff(issueID, issue, payload, true)
+					item["target"] = map[string]any{"issue": issueID}
+					item["diffs"] = diffs
+				} else {
+					notify := true
+					if n, ok := op["notify"].(bool); ok {
+						notify = n
+					}
+					if e := client.UpdateIssue(issueID, payload, notify); e != nil {
+						opErr = e
+						break
+					}
+					item["target"] = map[string]any{"issue": issueID}
+				}
+
+			case "transition":
+				issueVal, _ := op["issue"].(string)
+				issueID := ResolveIssueIdentifier(issueVal)
+				transition := op["transition"]
+				fileVal, _ := op["file"].(string)
+				desc = fmt.Sprintf("transition %s using %v", issueID, transition)
+				payload := map[string]any{"transition": map[string]any{"id": fmt.Sprintf("%v", transition)}}
+				if fileVal != "" {
+					extra, e := readJSONFile(filepath.Join(basePath, fileVal))
+					if e != nil {
+						opErr = e
+						break
+					}
+					for k, v := range extra {
+						payload[k] = v
+					}
+					payload["transition"] = map[string]any{"id": fmt.Sprintf("%v", transition)}
+				}
+				item["target"] = map[string]any{"issue": issueID, "transition": fmt.Sprintf("%v", transition)}
+				if !dryRun {
+					notify := true
+					if n, ok := op["notify"].(bool); ok {
+						notify = n
+					}
+					if e := client.TransitionIssue(issueID, payload, notify); e != nil {
+						opErr = e
+						break
+					}
+				}
+
+			case "create":
+				fileVal, _ := op["file"].(string)
+				desc = fmt.Sprintf("create issue from %s", fileVal)
+				if !dryRun {
+					payload, e := readJSONFile(filepath.Join(basePath, fileVal))
+					if e != nil {
+						opErr = e
+						break
+					}
+					created, e := client.CreateIssue(payload)
+					if e != nil {
+						opErr = e
+						break
+					}
+					item["result"] = created
+				}
+
+			default:
+				opErr = &cerrors.CojiraError{Code: cerrors.OpFailed, Message: fmt.Sprintf("Unknown operation: %s", opType), ExitCode: 1}
+			}
+
+			if !dryRun && sleepSec > 0 {
+				time.Sleep(time.Duration(sleepSec * float64(time.Second)))
+			}
+
+			if opErr != nil {
+				item["ok"] = false
+				item["error"] = opErr.Error()
+				r := output.Receipt{OK: false, Message: fmt.Sprintf("%s: %v", stringOr(desc, opType), opErr)}
+				item["receipt"] = r.Format()
+				return batchResult{item: item, failure: &failureEntry{key: stringOr(desc, opType), err: opErr.Error()}}
+			}
+
+			item["ok"] = true
+			if childKey != "" {
+				item["resume_key"] = childKey
+				_ = idempotency.Record(childKey, stringOr(desc, opType))
+			}
+			r := output.Receipt{OK: true, DryRun: dryRun, Message: desc}
+			item["receipt"] = r.Format()
+			return batchResult{item: item, success: true}
+		})
+
+		items = items[:0]
+		successCount = 0
+		failureCount = 0
+		skippedCount = 0
+		failures = nil
+
+		for idx, result := range results {
+			items = append(items, result.item)
+			switch {
+			case result.skipped:
+				skippedCount++
+			case result.failure != nil:
+				failureCount++
+				failures = append(failures, *result.failure)
+			case result.success:
+				successCount++
+			}
+
+			opType, _ := operations[idx]["op"].(string)
+			desc := opType
+			status := "OK"
+			if result.skipped {
+				status = "SKIPPED"
+			} else if result.failure != nil {
+				status = "FAILED"
+			}
+			output.EmitProgress(mode, quiet, idx+1, len(operations), desc, status)
+		}
+
+		if mode != "json" && !quiet && mode != "summary" {
+			for _, item := range items {
+				receipt, _ := item["receipt"].(string)
+				if receipt == "" {
+					continue
+				}
+				if ok, _ := item["ok"].(bool); ok {
+					fmt.Println(receipt)
+				} else {
+					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), receipt)
+				}
+			}
+		}
+	}
+
 	summary := map[string]any{
 		"total":   len(operations),
 		"ok":      successCount,
+		"skipped": skippedCount,
 		"failed":  failureCount,
 		"dry_run": dryRun,
 	}
@@ -307,7 +516,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	}
 
 	if mode == "summary" {
-		fmt.Printf("Batch complete: %d succeeded, %d failed.\n", successCount, failureCount)
+		fmt.Printf("Batch complete: %d succeeded, %d skipped, %d failed.\n", successCount, skippedCount, failureCount)
 		if failureCount > 0 {
 			return &cerrors.CojiraError{ExitCode: 1}
 		}
@@ -315,7 +524,7 @@ func runBatch(cmd *cobra.Command, args []string) error {
 	}
 
 	if !quiet {
-		fmt.Printf("\nSummary: %d succeeded, %d failed\n", successCount, failureCount)
+		fmt.Printf("\nSummary: %d succeeded, %d skipped, %d failed\n", successCount, skippedCount, failureCount)
 		printFailures(failures)
 	}
 	if failureCount > 0 {

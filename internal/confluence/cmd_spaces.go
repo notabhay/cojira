@@ -110,9 +110,15 @@ func runSpaces(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Spaces (%d):\n\n", len(items))
+	rows := make([][]string, 0, len(items))
 	for _, item := range items {
-		fmt.Printf("  %-12v %-18v %v\n", item["key"], item["type"], item["name"])
+		rows = append(rows, []string{
+			normalizeMaybeString(item["key"]),
+			output.Truncate(normalizeMaybeString(item["type"]), 18),
+			output.Truncate(normalizeMaybeString(item["name"]), 56),
+		})
 	}
+	fmt.Println(output.TableString([]string{"KEY", "TYPE", "NAME"}, rows))
 	return nil
 }
 

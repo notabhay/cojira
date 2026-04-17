@@ -10,6 +10,8 @@ import (
 	"github.com/notabhay/cojira/internal/cli"
 	"github.com/notabhay/cojira/internal/config"
 	"github.com/notabhay/cojira/internal/httpclient"
+	"github.com/notabhay/cojira/internal/logging"
+	"github.com/notabhay/cojira/internal/oauth"
 	"github.com/notabhay/cojira/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -22,6 +24,17 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 		baseURL = flagURL
 	}
 	token := strings.TrimSpace(os.Getenv("CONFLUENCE_API_TOKEN"))
+	authMode := strings.TrimSpace(os.Getenv("CONFLUENCE_AUTH_MODE"))
+	apiVersion := strings.TrimSpace(os.Getenv("CONFLUENCE_API_VERSION"))
+	apiBaseURL := ""
+	if strings.EqualFold(authMode, "oauth2") {
+		resolved, err := oauth.ResolveAtlassianOAuth2(cmd.Context(), "confluence", baseURL, "CONFLUENCE")
+		if err != nil {
+			return nil, err
+		}
+		token = resolved.AccessToken
+		apiBaseURL = resolved.APIBaseURL
+	}
 	verifySSL := true
 	verifySSLStr := strings.TrimSpace(os.Getenv("CONFLUENCE_VERIFY_SSL"))
 	if verifySSLStr != "" {
@@ -38,12 +51,17 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 	rc := cli.BuildRetryConfig(cmd)
 
 	return NewClient(ClientConfig{
-		BaseURL:   baseURL,
-		Token:     token,
-		UserAgent: userAgent,
-		VerifySSL: verifySSL,
-		Timeout:   time.Duration(rc.Timeout * float64(time.Second)),
+		BaseURL:    baseURL,
+		APIBaseURL: apiBaseURL,
+		APIVersion: apiVersion,
+		Token:      token,
+		UserAgent:  userAgent,
+		Context:    cmd.Context(),
+		Logger:     logging.NewDebugLogger(rc.Debug, "confluence"),
+		VerifySSL:  verifySSL,
+		Timeout:    time.Duration(rc.Timeout * float64(time.Second)),
 		RetryConfig: httpclient.RetryConfig{
+			Context:           rc.Context,
 			Retries:           rc.Retries,
 			BaseDelay:         time.Duration(rc.RetryBaseDelay * float64(time.Second)),
 			MaxDelay:          time.Duration(rc.RetryMaxDelay * float64(time.Second)),
@@ -52,6 +70,10 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 			RespectRetryAfter: true,
 			RetryExceptions:   true,
 			RetryStatuses:     map[int]bool{429: true, 500: true, 502: true, 503: true, 504: true},
+		},
+		CacheConfig: httpclient.CacheConfig{
+			Disabled: rc.NoCache,
+			TTL:      rc.CacheTTL,
 		},
 		Debug: rc.Debug,
 	})

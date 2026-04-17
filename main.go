@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/notabhay/cojira/internal/board"
 	"github.com/notabhay/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/config"
 	"github.com/notabhay/cojira/internal/confluence"
 	"github.com/notabhay/cojira/internal/dotenv"
 	cerrors "github.com/notabhay/cojira/internal/errors"
@@ -16,9 +20,12 @@ import (
 )
 
 func main() {
-	dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
+	dotenv.LoadDefaultOnce()
 
 	rootCmd := cli.NewRootCmd(version.Version)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	rootCmd.SetContext(ctx)
 
 	// Build jira command and attach board subcommands.
 	jiraCmd := jira.NewJiraCmd()
@@ -28,6 +35,8 @@ func main() {
 	rootCmd.AddCommand(confluence.NewConfluenceCmd())
 	rootCmd.AddCommand(jiraCmd)
 	rootCmd.AddCommand(meta.NewBootstrapCmd())
+	rootCmd.AddCommand(meta.NewCompletionCmd(rootCmd))
+	rootCmd.AddCommand(meta.NewConvertCmd())
 	rootCmd.AddCommand(meta.NewDescribeCmd(rootCmd))
 	rootCmd.AddCommand(meta.NewDoCmd(rootCmd))
 	rootCmd.AddCommand(meta.NewDoctorCmd())
@@ -41,6 +50,11 @@ func main() {
 		var ce *cerrors.CojiraError
 		if errors.As(err, &ce) {
 			code = ce.ExitCode
+		}
+
+		var cfgErr *config.ConfigError
+		if errors.As(err, &cfgErr) {
+			code = cfgErr.ExitCode
 		}
 
 		// Check for meta exitError (carries ExitCode() method).

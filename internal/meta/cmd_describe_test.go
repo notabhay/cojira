@@ -15,9 +15,11 @@ func testRootCmd() *cobra.Command {
 
 	// Add stub jira subcommand with sample sub-subcommands.
 	jiraCmd := &cobra.Command{Use: "jira", Short: "Jira operations"}
-	for _, name := range []string{"info", "get", "update", "create", "transition",
-		"transitions", "search", "board-issues", "fields", "whoami", "validate",
-		"batch", "bulk-update", "bulk-transition", "bulk-update-summaries",
+	for _, name := range []string{"info", "get", "update", "create", "template", "transition",
+		"transitions", "search", "query", "mine", "recent", "current", "branch",
+		"commit-template", "pr-title", "finish-branch", "board-issues", "fields",
+		"field-values", "graph", "blocked", "critical-path", "whoami", "validate",
+		"poll", "offline", "batch", "bulk-update", "bulk-transition", "bulk-update-summaries",
 		"sync", "sync-from-dir"} {
 		sub := &cobra.Command{Use: name, Short: name + " command"}
 		jiraCmd.AddCommand(sub)
@@ -35,6 +37,7 @@ func testRootCmd() *cobra.Command {
 
 	// Add meta commands.
 	root.AddCommand(NewBootstrapCmd())
+	root.AddCommand(NewCompletionCmd(root))
 	root.AddCommand(NewDescribeCmd(root))
 	root.AddCommand(NewDoctorCmd())
 	root.AddCommand(NewInitCmd())
@@ -60,6 +63,8 @@ func TestBuildManifest(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, jiraSubs, "bulk-transition")
 	assert.Contains(t, jiraSubs, "update")
+	assert.Contains(t, jiraSubs, "query")
+	assert.Contains(t, jiraSubs, "offline")
 
 	// Confluence subcommands should be present.
 	confParser, ok := parsers["confluence"].(map[string]any)

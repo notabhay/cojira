@@ -8,8 +8,9 @@ import (
 )
 
 var (
-	modeMu sync.RWMutex
-	mode   string // empty means "not set"
+	modeMu    sync.RWMutex
+	mode      string // empty means "not set"
+	colorMode string // empty means "not set"
 )
 
 // SetMode sets the global output mode (e.g. "human", "json", "summary").
@@ -17,6 +18,13 @@ var (
 func SetMode(m string) {
 	modeMu.Lock()
 	mode = m
+	modeMu.Unlock()
+}
+
+// SetColorMode sets the global color mode: auto, always, or never.
+func SetColorMode(m string) {
+	modeMu.Lock()
+	colorMode = m
 	modeMu.Unlock()
 }
 
@@ -33,6 +41,32 @@ func GetMode() string {
 		return env
 	}
 	return "human"
+}
+
+// GetColorMode returns the current color mode.
+func GetColorMode() string {
+	modeMu.RLock()
+	m := colorMode
+	modeMu.RUnlock()
+	if m != "" {
+		return m
+	}
+	if env := os.Getenv("COJIRA_COLOR"); env != "" {
+		return env
+	}
+	return "auto"
+}
+
+// ShouldColorize returns true when human output should use ANSI colors.
+func ShouldColorize() bool {
+	switch GetColorMode() {
+	case "always":
+		return true
+	case "never":
+		return false
+	default:
+		return IsTTY(int(os.Stdout.Fd()))
+	}
 }
 
 // IsTTY reports whether the given file descriptor is a terminal.

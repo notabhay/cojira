@@ -10,6 +10,7 @@ import (
 	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/idempotency"
 	"github.com/notabhay/cojira/internal/output"
+	"github.com/notabhay/cojira/internal/undo"
 	"github.com/spf13/cobra"
 )
 
@@ -25,6 +26,7 @@ func NewUpdateCmd() *cobra.Command {
 	cmd.Flags().String("summary", "", "Quick summary update")
 	cmd.Flags().String("description", "", "Quick description update")
 	cmd.Flags().String("description-file", "", "Read description from a text file")
+	cmd.Flags().String("description-format", "raw", "Description format: raw, markdown, or adf")
 	cmd.Flags().StringArray("set", nil, "Shorthand field update (repeatable): field=value, field:=<json>, labels+=x, labels-=x")
 	cmd.Flags().Bool("no-notify", false, "Disable notifications")
 	cmd.Flags().Bool("dry-run", false, "Preview changes without applying")
@@ -53,6 +55,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	summaryFlag, _ := cmd.Flags().GetString("summary")
 	descFlag, _ := cmd.Flags().GetString("description")
 	descFile, _ := cmd.Flags().GetString("description-file")
+	descFormat, _ := cmd.Flags().GetString("description-format")
 	setExprs, _ := cmd.Flags().GetStringArray("set")
 	noNotify, _ := cmd.Flags().GetBool("no-notify")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
@@ -162,9 +165,12 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 
 	// Apply --set expressions.
 	for _, s := range setOps {
-		if err := applySetOp(s.field, s.op, s.value, fields, currentFields); err != nil {
+		if err := applySetOp(s.field, s.op, s.value, fields, mergedFieldState(currentFields, fields)); err != nil {
 			return err
 		}
+	}
+	if err := normalizeJiraDescriptionField(fields, descFormat, jiraUsesADF()); err != nil {
+		return err
 	}
 
 	payload["fields"] = fields
@@ -277,6 +283,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	if err := client.UpdateIssue(issueID, payload, !noNotify); err != nil {
 		return err
 	}
+	recordUndoEntry(undo.NewGroupID("jira.update"), issueID, "jira.update", snapshotFieldValues(currentFields, diffFieldNames), "", "")
 
 	if idemKey != "" {
 		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.update %s", issueID))
@@ -333,6 +340,17 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func mergedFieldState(baseFields, pendingFields map[string]any) map[string]any {
+	merged := map[string]any{}
+	for k, v := range baseFields {
+		merged[k] = v
+	}
+	for k, v := range pendingFields {
+		merged[k] = v
+	}
+	return merged
+}
+
 // applySetOp applies a single --set operation to the fields map using currentFields for context.
 func applySetOp(field, op, value string, fields, currentFields map[string]any) error {
 	if op == OpJSONSet {
@@ -360,17 +378,22 @@ func applySetOp(field, op, value string, fields, currentFields map[string]any) e
 
 	if field == "labels" && (op == OpListAppend || op == OpListRemove) {
 		cur := currentFields["labels"]
-		curSlice, ok := cur.([]any)
-		if !ok && cur != nil {
+		var strs []string
+		switch typed := cur.(type) {
+		case nil:
+		case []any:
+			strs = make([]string, 0, len(typed))
+			for _, x := range typed {
+				strs = append(strs, fmt.Sprintf("%v", x))
+			}
+		case []string:
+			strs = append(strs, typed...)
+		default:
 			return &cerrors.CojiraError{
 				Code:     cerrors.OpFailed,
 				Message:  "labels is not a list on this issue; cannot apply += or -=.",
 				ExitCode: 1,
 			}
-		}
-		strs := make([]string, 0, len(curSlice))
-		for _, x := range curSlice {
-			strs = append(strs, fmt.Sprintf("%v", x))
 		}
 		result, err := MergeListOfStrings(strs, op, value)
 		if err != nil {
@@ -387,18 +410,22 @@ func applySetOp(field, op, value string, fields, currentFields map[string]any) e
 
 	if (field == "components" || field == "versions" || field == "fixVersions") && (op == OpListAppend || op == OpListRemove) {
 		cur := currentFields[field]
-		curSlice, ok := cur.([]any)
-		if !ok && cur != nil {
+		var curDicts []map[string]any
+		switch typed := cur.(type) {
+		case nil:
+		case []any:
+			for _, x := range typed {
+				if m, ok := x.(map[string]any); ok {
+					curDicts = append(curDicts, m)
+				}
+			}
+		case []map[string]any:
+			curDicts = append(curDicts, typed...)
+		default:
 			return &cerrors.CojiraError{
 				Code:     cerrors.OpFailed,
 				Message:  fmt.Sprintf("%s is not a list on this issue; cannot apply += or -=.", field),
 				ExitCode: 1,
-			}
-		}
-		var curDicts []map[string]any
-		for _, x := range curSlice {
-			if m, ok := x.(map[string]any); ok {
-				curDicts = append(curDicts, m)
 			}
 		}
 		result, err := MergeListByName(curDicts, op, value)
@@ -431,17 +458,22 @@ func applySetOp(field, op, value string, fields, currentFields map[string]any) e
 
 	if op == OpListAppend || op == OpListRemove {
 		cur := currentFields[field]
-		curSlice, ok := cur.([]any)
-		if !ok && cur != nil {
+		var strs []string
+		switch typed := cur.(type) {
+		case nil:
+		case []any:
+			strs = make([]string, 0, len(typed))
+			for _, x := range typed {
+				strs = append(strs, fmt.Sprintf("%v", x))
+			}
+		case []string:
+			strs = append(strs, typed...)
+		default:
 			return &cerrors.CojiraError{
 				Code:     cerrors.OpFailed,
 				Message:  fmt.Sprintf("%s is not a list on this issue; cannot apply += or -=.", field),
 				ExitCode: 1,
 			}
-		}
-		strs := make([]string, 0, len(curSlice))
-		for _, x := range curSlice {
-			strs = append(strs, fmt.Sprintf("%v", x))
 		}
 		result, err := MergeListOfStrings(strs, op, value)
 		if err != nil {

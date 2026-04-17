@@ -70,12 +70,29 @@ Primary commands:
 
 - `info`
 - `get`
+- `dashboard`
+- `dashboards`
+- `current`
+- `branch`
+- `commit-template`
+- `pr-title`
+- `finish-branch`
+- `mine`
+- `recent`
 - `search`
 - `fields`
+- `field-values`
 - `projects`
 - `users`
+- `history`
+- `diff`
+- `graph`
+- `blocked`
+- `critical-path`
 - `whoami`
 - `create`
+- `template`
+- `clone`
 - `assign`
 - `comment`
 - `attachment`
@@ -87,7 +104,13 @@ Primary commands:
 - `update`
 - `transition`
 - `transitions`
+- `undo`
+- `board-view`
 - `board-issues`
+- `report`
+- `query`
+- `poll`
+- `offline`
 - `batch`
 - `bulk-update`
 - `bulk-transition`
@@ -105,8 +128,14 @@ Experimental board commands:
 Primary commands:
 
 - `info`
+- `history`
+- `diff`
+- `restore`
+- `restrictions`
 - `get`
+- `attachment`
 - `comment`
+- `blog`
 - `find`
 - `spaces`
 - `labels`
@@ -125,17 +154,12 @@ Primary commands:
 
 ### Jira
 
-- board columns,
-- dashboards,
+- board column administration,
 - project administration.
 
 ### Confluence
 
-- attachments,
-- permissions administration,
-- page history diffing,
 - templates,
-- blog posts,
 - PDF or Word export.
 
 ## Identifier shortcuts
@@ -169,7 +193,9 @@ Accepted forms:
 
 - Use full URLs when identifier resolution may be ambiguous.
 - For searches, prefer summaries unless you need structured follow-up.
+- For sprint analytics, `report sprint`, `velocity`, `burndown`, `cycle-time`, `blocker-aging`, and `workload` are available.
 - For Confluence updates, fetch and edit the storage XHTML directly.
+- For Jira API v3, descriptions and comments may use ADF instead of plain strings.
 - For bulk Jira work, add modest throttling when appropriate.
 
 ## If setup breaks

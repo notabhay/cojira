@@ -36,3 +36,10 @@ func TestApplySetOpCoercesCommaSeparatedLists(t *testing.T) {
 	assert.Equal(t, []string{"foo", "bar"}, fields["labels"])
 	assert.Equal(t, []map[string]any{{"name": "Frontend"}, {"name": "Backend"}}, fields["components"])
 }
+
+func TestMergedFieldStateAllowsSequentialListSetOps(t *testing.T) {
+	fields := map[string]any{}
+	require.NoError(t, applySetOp("labels", OpListAppend, "alpha", fields, mergedFieldState(map[string]any{}, fields)))
+	require.NoError(t, applySetOp("labels", OpListAppend, "beta", fields, mergedFieldState(map[string]any{}, fields)))
+	assert.Equal(t, []string{"alpha", "beta"}, fields["labels"])
+}

@@ -57,6 +57,13 @@ bundled_binary_path() {
     "${root}/bin/cojira"
   )
 
+  if [ ! -f "${root}/go.mod" ]; then
+    candidates+=(
+      "${root}/cojira-${os}-${arch}"
+      "${root}/cojira"
+    )
+  fi
+
   local candidate
   for candidate in "${candidates[@]}"; do
     if [ -x "$candidate" ]; then
@@ -69,18 +76,26 @@ bundled_binary_path() {
 
 seed_env_file() {
   local root="$1"
+  local default_conf_url="${COJIRA_DEFAULT_CONFLUENCE_BASE_URL:-https://confluence.example.com/confluence/}"
+  local default_jira_url="${COJIRA_DEFAULT_JIRA_BASE_URL:-https://jira.example.com}"
 
   if [ -f "${root}/.env" ]; then
     return 0
   fi
 
-  cat > "${root}/.env" <<'EOF'
+  if [ -f "${root}/.env.example" ]; then
+    cp "${root}/.env.example" "${root}/.env"
+    chmod 0600 "${root}/.env" || true
+    return 0
+  fi
+
+  cat > "${root}/.env" <<EOF
 # Confluence
-CONFLUENCE_BASE_URL=https://confluence.rakuten-it.com/confluence/
+CONFLUENCE_BASE_URL=${default_conf_url}
 CONFLUENCE_API_TOKEN=
 
 # Jira
-JIRA_BASE_URL=https://jira.rakuten-it.com/jira
+JIRA_BASE_URL=${default_jira_url}
 JIRA_API_TOKEN=
 EOF
   chmod 0600 "${root}/.env" || true
@@ -91,6 +106,9 @@ cleanup_bundle_workspace() {
   local self_path="$2"
 
   rm -rf "${root}/bin" "${root}/examples"
+  if [ ! -f "${root}/go.mod" ]; then
+    rm -f "${root}/cojira" "${root}"/cojira-*
+  fi
   rm -f "${root}/.env.example" "${root}/COJIRA-BOOTSTRAP.md"
   rm -f "${root}/cojira.zip"
   rm -f "${root}"/cojira-*.zip
@@ -118,7 +136,7 @@ install_bundled_binary() {
   local self_path="$3"
 
   local bundled_bin
-  bundled_bin="$(bundled_binary_path "$root")" || die "No bundled binary found for this platform in ${root}/bin"
+  bundled_bin="$(bundled_binary_path "$root")" || die "No bundled binary found for this platform in ${root}"
 
   mkdir -p "$install_dir"
   local bin_dst="${install_dir}/cojira"

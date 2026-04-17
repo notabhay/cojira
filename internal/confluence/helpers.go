@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	cerrors "github.com/notabhay/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/markdownconv"
 )
 
 // ConfluenceIdentifierFormats describes the supported page identifier formats.
@@ -32,6 +33,29 @@ func readTextFile(path string) (string, error) {
 		}
 	}
 	return string(data), nil
+}
+
+func convertStorageBody(bodyText, format string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "storage", "storage-xhtml", "xhtml", "raw":
+		return bodyText, nil
+	case "markdown", "md":
+		converted, err := markdownconv.ToConfluenceStorage(bodyText)
+		if err != nil {
+			return "", &cerrors.CojiraError{
+				Code:     cerrors.OpFailed,
+				Message:  fmt.Sprintf("Failed to convert Markdown body: %v", err),
+				ExitCode: 1,
+			}
+		}
+		return converted, nil
+	default:
+		return "", &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  fmt.Sprintf("Unsupported body format %q. Use storage or markdown.", format),
+			ExitCode: 2,
+		}
+	}
 }
 
 // readJSONFile reads and parses a JSON file, returning a map.
@@ -113,4 +137,27 @@ func defaultPageID(cfg map[string]any) string {
 		}
 	}
 	return ""
+}
+
+func intFromAny(v any, defaultVal int) int {
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case json.Number:
+		i, err := n.Int64()
+		if err == nil {
+			return int(i)
+		}
+	}
+	return defaultVal
+}
+
+func normalizeMaybeString(v any) string {
+	text := fmt.Sprintf("%v", v)
+	if text == "" || text == "<nil>" {
+		return ""
+	}
+	return text
 }

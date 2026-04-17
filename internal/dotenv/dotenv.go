@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // CredentialsPath returns the default path for global cojira credentials
@@ -73,6 +74,11 @@ func DefaultSearchPaths() []string {
 	return paths
 }
 
+var (
+	loadOnceMu    sync.Mutex
+	loadOnceCache = map[string]string{}
+)
+
 // LoadIfPresent loads every existing .env file from paths in order.
 // It sets environment variables that are not already set, so earlier files
 // win over later files and process env always has highest precedence.
@@ -101,6 +107,32 @@ func LoadIfPresent(paths []string) string {
 		}
 	}
 	return firstLoaded
+}
+
+// LoadIfPresentOnce loads the given paths at most once per process for the
+// exact ordered path set. It is useful for startup helpers that may be reached
+// through multiple code paths in the same command execution.
+func LoadIfPresentOnce(paths []string) string {
+	key := strings.Join(paths, "\x00")
+
+	loadOnceMu.Lock()
+	loaded, ok := loadOnceCache[key]
+	loadOnceMu.Unlock()
+	if ok {
+		return loaded
+	}
+
+	loaded = LoadIfPresent(paths)
+
+	loadOnceMu.Lock()
+	loadOnceCache[key] = loaded
+	loadOnceMu.Unlock()
+	return loaded
+}
+
+// LoadDefaultOnce loads the default search paths at most once per process.
+func LoadDefaultOnce() string {
+	return LoadIfPresentOnce(DefaultSearchPaths())
 }
 
 // placeholders is the set of known template placeholder values.

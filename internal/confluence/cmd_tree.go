@@ -3,12 +3,19 @@ package confluence
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/notabhay/cojira/internal/cli"
 	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 )
+
+type pageTreeNode struct {
+	ID       string
+	Title    string
+	Children []pageTreeNode
+}
 
 // NewTreeCmd creates the "tree" subcommand.
 func NewTreeCmd() *cobra.Command {
@@ -19,6 +26,7 @@ func NewTreeCmd() *cobra.Command {
 		RunE:  runTree,
 	}
 	cmd.Flags().IntP("depth", "d", 3, "Max depth (default: 3)")
+	cmd.Flags().Int("concurrency", 1, "Number of concurrent tree fetch workers (default: 1, max: 10)")
 	cli.AddOutputFlags(cmd, true)
 	cli.AddHTTPRetryFlags(cmd)
 	return cmd
@@ -35,6 +43,8 @@ func runTree(cmd *cobra.Command, args []string) error {
 	defPageID := defaultPageID(cfgData)
 	pageArg := args[0]
 	maxDepth, _ := cmd.Flags().GetInt("depth")
+	concurrency, _ := cmd.Flags().GetInt("concurrency")
+	concurrency = cli.ClampConcurrency(concurrency)
 
 	pageID, err := ResolvePageID(client, pageArg, defPageID)
 	if err != nil {
@@ -65,12 +75,13 @@ func runTree(cmd *cobra.Command, args []string) error {
 	}
 
 	title, _ := page["title"].(string)
+	tree := fetchPageTree(client, pageID, title, 0, maxDepth, newConfluenceSemaphore(concurrency))
 
 	if mode == "json" {
 		nodes := []map[string]any{
 			{"id": pageID, "title": title, "parent_id": nil, "depth": 0},
 		}
-		collectTreeJSON(client, pageID, pageID, 1, maxDepth, &nodes)
+		flattenPageTree(tree, pageID, 1, &nodes)
 		return output.PrintJSON(output.BuildEnvelope(
 			true, "confluence", "tree",
 			map[string]any{"page": pageArg, "page_id": pageID},
@@ -84,69 +95,150 @@ func runTree(cmd *cobra.Command, args []string) error {
 	}
 
 	if mode == "summary" {
-		children, _ := client.GetChildren(pageID, 100)
-		fmt.Printf("Tree for %s (%s): %d direct child(ren), depth %d.\n", title, pageID, len(children), maxDepth)
+		fmt.Printf("Tree for %s (%s): %d direct child(ren), depth %d.\n", title, pageID, len(tree.Children), maxDepth)
 		return nil
 	}
 
-	fmt.Printf("%s (%s)\n", title, pageID)
-	children, _ := client.GetChildren(pageID, 100)
-	for i, child := range children {
-		isLast := i == len(children)-1
-		childID, _ := child["id"].(string)
-		childTitle, _ := child["title"].(string)
-		printTreeNode(client, childID, childTitle, 1, "", isLast, maxDepth)
-	}
+	printPageTree(tree, 0, "", true)
 	return nil
 }
 
-func collectTreeJSON(client *Client, rootID, parentID string, depth, maxDepth int, nodes *[]map[string]any) {
-	if depth > maxDepth {
+func newConfluenceSemaphore(concurrency int) chan struct{} {
+	if concurrency <= 1 {
+		return nil
+	}
+	return make(chan struct{}, concurrency)
+}
+
+func withConfluenceSemaphore(sem chan struct{}, fn func()) {
+	if sem == nil {
+		fn()
 		return
 	}
-	children, err := client.GetChildren(parentID, 100)
-	if err != nil {
-		return
+	sem <- struct{}{}
+	defer func() { <-sem }()
+	fn()
+}
+
+func getChildrenConcurrent(client *Client, pageID string, sem chan struct{}) ([]map[string]any, error) {
+	var (
+		children []map[string]any
+		err      error
+	)
+	withConfluenceSemaphore(sem, func() {
+		children, err = client.GetChildren(pageID, 100)
+	})
+	return children, err
+}
+
+func countPageTree(client *Client, pageID string, sem chan struct{}) int {
+	children, err := getChildrenConcurrent(client, pageID, sem)
+	if err != nil || len(children) == 0 {
+		return 1
 	}
-	for _, child := range children {
-		childID, _ := child["id"].(string)
-		childTitle, _ := child["title"].(string)
+
+	counts := make([]int, len(children))
+	if len(children) == 1 || sem == nil {
+		for i, child := range children {
+			childID, _ := child["id"].(string)
+			if childID == "" {
+				continue
+			}
+			counts[i] = countPageTree(client, childID, sem)
+		}
+	} else {
+		var wg sync.WaitGroup
+		for i, child := range children {
+			i := i
+			child := child
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				childID, _ := child["id"].(string)
+				if childID == "" {
+					return
+				}
+				counts[i] = countPageTree(client, childID, sem)
+			}()
+		}
+		wg.Wait()
+	}
+
+	total := 1
+	for _, childCount := range counts {
+		total += childCount
+	}
+	return total
+}
+
+func fetchPageTree(client *Client, pageID, title string, depth, maxDepth int, sem chan struct{}) pageTreeNode {
+	node := pageTreeNode{ID: pageID, Title: title}
+	if depth >= maxDepth {
+		return node
+	}
+
+	children, err := getChildrenConcurrent(client, pageID, sem)
+	if err != nil || len(children) == 0 {
+		return node
+	}
+
+	results := make([]pageTreeNode, len(children))
+	if len(children) == 1 || sem == nil {
+		for i, child := range children {
+			childID, _ := child["id"].(string)
+			childTitle, _ := child["title"].(string)
+			results[i] = fetchPageTree(client, childID, childTitle, depth+1, maxDepth, sem)
+		}
+		node.Children = results
+		return node
+	}
+
+	var wg sync.WaitGroup
+	for i, child := range children {
+		i := i
+		child := child
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			childID, _ := child["id"].(string)
+			childTitle, _ := child["title"].(string)
+			results[i] = fetchPageTree(client, childID, childTitle, depth+1, maxDepth, sem)
+		}()
+	}
+	wg.Wait()
+	node.Children = results
+	return node
+}
+
+func flattenPageTree(node pageTreeNode, parentID string, depth int, nodes *[]map[string]any) {
+	for _, child := range node.Children {
 		*nodes = append(*nodes, map[string]any{
-			"id":        childID,
-			"title":     childTitle,
+			"id":        child.ID,
+			"title":     child.Title,
 			"parent_id": parentID,
 			"depth":     depth,
 		})
-		if depth < maxDepth {
-			collectTreeJSON(client, rootID, childID, depth+1, maxDepth, nodes)
-		}
+		flattenPageTree(child, child.ID, depth+1, nodes)
 	}
 }
 
-func printTreeNode(client *Client, pageID, title string, depth int, prefix string, isLast bool, maxDepth int) {
-	connector := "├── "
-	if isLast {
-		connector = "└── "
-	}
-	fmt.Printf("%s%s%s (%s)\n", prefix, connector, title, pageID)
-
-	if depth >= maxDepth {
-		return
-	}
-
-	children, err := client.GetChildren(pageID, 100)
-	if err != nil || len(children) == 0 {
-		return
+func printPageTree(node pageTreeNode, depth int, prefix string, isLast bool) {
+	if depth == 0 {
+		fmt.Printf("%s (%s)\n", node.Title, node.ID)
+	} else {
+		connector := "├── "
+		if isLast {
+			connector = "└── "
+		}
+		fmt.Printf("%s%s%s (%s)\n", prefix, connector, node.Title, node.ID)
 	}
 
 	newPrefix := prefix + "│   "
 	if isLast {
 		newPrefix = prefix + "    "
 	}
-	for i, child := range children {
-		isChildLast := i == len(children)-1
-		childID, _ := child["id"].(string)
-		childTitle, _ := child["title"].(string)
-		printTreeNode(client, childID, childTitle, depth+1, newPrefix, isChildLast, maxDepth)
+	for i, child := range node.Children {
+		isChildLast := i == len(node.Children)-1
+		printPageTree(child, depth+1, newPrefix, isChildLast)
 	}
 }

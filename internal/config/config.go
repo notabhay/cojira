@@ -77,6 +77,35 @@ func (c *ProjectConfig) GetAlias(name string) string {
 	return strings.TrimSpace(s)
 }
 
+// GetStringMap returns a named nested object as a string map. Non-string values
+// are skipped.
+func (c *ProjectConfig) GetStringMap(keys []string) map[string]string {
+	raw := c.GetValue(keys, nil)
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(m))
+	for key, value := range m {
+		s, ok := value.(string)
+		if !ok || strings.TrimSpace(s) == "" {
+			continue
+		}
+		out[key] = strings.TrimSpace(s)
+	}
+	return out
+}
+
+// GetObject returns a nested object value or an empty map when absent.
+func (c *ProjectConfig) GetObject(keys []string) map[string]any {
+	raw := c.GetValue(keys, nil)
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return map[string]any{}
+	}
+	return m
+}
+
 func coerceMapping(data map[string]any, name string, path string) error {
 	v, ok := data[name]
 	if !ok || v == nil {
@@ -171,6 +200,71 @@ func discoverConfigPaths() []string {
 		paths = append(paths, filepath.Join(dirs[i], ConfigFilename))
 	}
 	return paths
+}
+
+// NearestConfigPath returns the closest existing .cojira.json walking from cwd
+// to the filesystem root. If no config exists, it returns the path that should
+// be created in the cwd.
+func NearestConfigPath() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ConfigFilename
+	}
+	for cur := cwd; ; cur = filepath.Dir(cur) {
+		candidate := filepath.Join(cur, ConfigFilename)
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+	}
+	return filepath.Join(cwd, ConfigFilename)
+}
+
+// LoadWritableProjectConfig loads the closest writable project config. If no
+// file exists yet, it returns an empty config rooted at the cwd path.
+func LoadWritableProjectConfig() (*ProjectConfig, error) {
+	path := NearestConfigPath()
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return &ProjectConfig{
+			Path: path,
+			Data: map[string]any{},
+		}, nil
+	}
+	return parseConfigFile(path)
+}
+
+// WriteProjectConfig writes a project config as indented JSON.
+func WriteProjectConfig(path string, data map[string]any) error {
+	if strings.TrimSpace(path) == "" {
+		return &ConfigError{
+			Code:        CodeConfigInvalid,
+			Message:     "Config path is required.",
+			UserMessage: fmt.Sprintf("I couldn't determine where to write %s.", ConfigFilename),
+			ExitCode:    2,
+		}
+	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	encoded, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return &ConfigError{
+			Code:        CodeConfigInvalid,
+			Message:     fmt.Sprintf("Unable to encode %s: %v", path, err),
+			UserMessage: fmt.Sprintf("I couldn't save %s because the generated JSON was invalid.", ConfigFilename),
+			ExitCode:    2,
+		}
+	}
+	encoded = append(encoded, '\n')
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, encoded, 0o644)
 }
 
 func mergeValue(dst any, src any) any {

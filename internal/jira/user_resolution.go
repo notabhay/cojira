@@ -17,6 +17,11 @@ func resolveUserReference(client *Client, ref string) (map[string]any, error) {
 		}
 	}
 
+	switch strings.ToLower(value) {
+	case "me", "self", "currentuser()":
+		return client.GetMyself()
+	}
+
 	if key, raw := splitTypedUserRef(value); key != "" {
 		return map[string]any{key: raw}, nil
 	}

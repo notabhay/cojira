@@ -82,6 +82,7 @@ func runFields(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Print("Fields:\n\n")
+	rows := make([][]string, 0, len(fields))
 	for _, field := range fields {
 		fieldID, _ := field["id"].(string)
 		name, _ := field["name"].(string)
@@ -98,7 +99,13 @@ func runFields(cmd *cobra.Command, _ []string) error {
 		if isCustom, ok := field["custom"].(bool); ok && isCustom {
 			custom = "custom"
 		}
-		fmt.Printf("  %-22s %-6s %-14s %s\n", fieldID, custom, fieldType, name)
+		rows = append(rows, []string{
+			fieldID,
+			custom,
+			fieldType,
+			output.Truncate(name, 56),
+		})
 	}
+	fmt.Println(output.TableString([]string{"ID", "KIND", "TYPE", "NAME"}, rows))
 	return nil
 }

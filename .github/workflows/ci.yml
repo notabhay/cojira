@@ -27,6 +27,19 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      - name: Coverage
+        if: matrix.go-version == '1.23'
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out
+
+      - name: Upload coverage artifact
+        if: matrix.go-version == '1.23'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage.out
+          path: coverage.out
+
       - name: Build
         run: go build -o cojira .
 
@@ -44,3 +57,22 @@ jobs:
         uses: golangci/golangci-lint-action@v6
         with:
           version: latest
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Fuzz parse surfaces
+        run: |
+          go test -run=^$ -fuzz=FuzzParseIntent -fuzztime=3s ./internal/meta
+          go test -run=^$ -fuzz=FuzzResolveIssueIdentifier -fuzztime=3s ./internal/jira
+          go test -run=^$ -fuzz=FuzzParseSetExpr -fuzztime=3s ./internal/jira
+          go test -run=^$ -fuzz=FuzzResolvePageID -fuzztime=3s ./internal/confluence
+          go test -run=^$ -fuzz=FuzzTinyCodeToPageID -fuzztime=3s ./internal/confluence
+          go test -run=^$ -fuzz=FuzzResolveBoardIdentifier -fuzztime=3s ./internal/board

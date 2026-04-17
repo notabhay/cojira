@@ -9,7 +9,8 @@ before:
     - go test ./...
 
 builds:
-  - main: .
+  - id: cojira
+    main: .
     binary: cojira
     env:
       - CGO_ENABLED=0
@@ -30,9 +31,65 @@ archives:
         formats: ['zip']
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - COJIRA-BOOTSTRAP.md
+      - .env.example
+      - install.sh
+      - install.ps1
 
 checksum:
   name_template: 'checksums.txt'
+
+dockers:
+  - id: linux-amd64
+    ids:
+      - cojira
+    goos: linux
+    goarch: amd64
+    use: buildx
+    dockerfile: Dockerfile
+    image_templates:
+      - ghcr.io/notabhay/cojira:{{ .Version }}-amd64
+      - ghcr.io/notabhay/cojira:latest-amd64
+    build_flag_templates:
+      - --pull
+      - --label=org.opencontainers.image.title={{ .ProjectName }}
+      - --label=org.opencontainers.image.description=Agent-first Jira and Confluence CLI
+      - --label=org.opencontainers.image.url=https://github.com/notabhay/cojira
+      - --label=org.opencontainers.image.source=https://github.com/notabhay/cojira
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.created={{ .Date }}
+  - id: linux-arm64
+    ids:
+      - cojira
+    goos: linux
+    goarch: arm64
+    use: buildx
+    dockerfile: Dockerfile
+    image_templates:
+      - ghcr.io/notabhay/cojira:{{ .Version }}-arm64
+      - ghcr.io/notabhay/cojira:latest-arm64
+    build_flag_templates:
+      - --pull
+      - --label=org.opencontainers.image.title={{ .ProjectName }}
+      - --label=org.opencontainers.image.description=Agent-first Jira and Confluence CLI
+      - --label=org.opencontainers.image.url=https://github.com/notabhay/cojira
+      - --label=org.opencontainers.image.source=https://github.com/notabhay/cojira
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.created={{ .Date }}
+
+docker_manifests:
+  - name_template: ghcr.io/notabhay/cojira:{{ .Version }}
+    image_templates:
+      - ghcr.io/notabhay/cojira:{{ .Version }}-amd64
+      - ghcr.io/notabhay/cojira:{{ .Version }}-arm64
+  - name_template: ghcr.io/notabhay/cojira:latest
+    image_templates:
+      - ghcr.io/notabhay/cojira:latest-amd64
+      - ghcr.io/notabhay/cojira:latest-arm64
 
 changelog:
   sort: asc

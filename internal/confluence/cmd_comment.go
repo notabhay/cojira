@@ -1,7 +1,6 @@
 package confluence
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -22,6 +21,7 @@ func NewCommentCmd() *cobra.Command {
 	}
 	cmd.Flags().String("add", "", "Comment body to add (storage XHTML)")
 	cmd.Flags().String("file", "", "Read comment body from a file")
+	cmd.Flags().String("format", "storage", "Comment body format: storage or markdown")
 	cmd.Flags().Bool("all", false, "Fetch all comments")
 	cmd.Flags().Int("limit", 20, "Maximum comments to fetch")
 	cmd.Flags().Int("start", 0, "Start offset for comment listing")
@@ -52,6 +52,7 @@ func runComment(cmd *cobra.Command, args []string) error {
 
 	addBody, _ := cmd.Flags().GetString("add")
 	bodyFile, _ := cmd.Flags().GetString("file")
+	format, _ := cmd.Flags().GetString("format")
 	all, _ := cmd.Flags().GetBool("all")
 	limit, _ := cmd.Flags().GetInt("limit")
 	start, _ := cmd.Flags().GetInt("start")
@@ -73,6 +74,10 @@ func runComment(cmd *cobra.Command, args []string) error {
 		bodyText := strings.TrimSpace(addBody)
 		if bodyText == "" {
 			return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "Comment body cannot be empty.", ExitCode: 2}
+		}
+		bodyText, err = convertStorageBody(bodyText, format)
+		if err != nil {
+			return err
 		}
 		target := map[string]any{"page": pageArg, "page_id": pageID}
 		if dryRun {
@@ -158,19 +163,4 @@ func runComment(cmd *cobra.Command, args []string) error {
 		fmt.Printf("[%v] %s | %v\n%s\n\n", item["id"], author, getNestedString(item, "history", "createdDate"), body)
 	}
 	return nil
-}
-
-func intFromAny(v any, defaultVal int) int {
-	switch n := v.(type) {
-	case float64:
-		return int(n)
-	case int:
-		return n
-	case json.Number:
-		i, err := n.Int64()
-		if err == nil {
-			return int(i)
-		}
-	}
-	return defaultVal
 }

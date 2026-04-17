@@ -88,12 +88,21 @@ func buildManifest(rootCmd *cobra.Command) map[string]any {
 		"env": map[string]any{
 			"confluence": map[string]any{
 				"required": []string{"CONFLUENCE_BASE_URL", "CONFLUENCE_API_TOKEN"},
+				"optional": []string{
+					"CONFLUENCE_API_VERSION", "CONFLUENCE_AUTH_MODE", "CONFLUENCE_VERIFY_SSL", "CONFLUENCE_USER_AGENT",
+					"CONFLUENCE_OAUTH_ACCESS_TOKEN", "CONFLUENCE_OAUTH_REFRESH_TOKEN", "CONFLUENCE_OAUTH_CLIENT_ID",
+					"CONFLUENCE_OAUTH_CLIENT_SECRET", "CONFLUENCE_OAUTH_TOKEN_URL", "CONFLUENCE_OAUTH_CLOUD_ID",
+					"CONFLUENCE_OAUTH_EXPIRY",
+				},
 			},
 			"jira": map[string]any{
 				"required": []string{"JIRA_BASE_URL", "JIRA_API_TOKEN"},
 				"optional": []string{
 					"JIRA_EMAIL", "JIRA_PROJECT", "JIRA_API_VERSION",
 					"JIRA_AUTH_MODE", "JIRA_VERIFY_SSL", "JIRA_USER_AGENT",
+					"JIRA_OAUTH_ACCESS_TOKEN", "JIRA_OAUTH_REFRESH_TOKEN", "JIRA_OAUTH_CLIENT_ID",
+					"JIRA_OAUTH_CLIENT_SECRET", "JIRA_OAUTH_TOKEN_URL", "JIRA_OAUTH_CLOUD_ID",
+					"JIRA_OAUTH_EXPIRY",
 				},
 			},
 		},
@@ -131,19 +140,25 @@ func buildManifest(rootCmd *cobra.Command) map[string]any {
 // configuredToolsFromEnv checks which tools have the required env vars set.
 func configuredToolsFromEnv() []string {
 	var tools []string
-	if os.Getenv("JIRA_BASE_URL") != "" && os.Getenv("JIRA_API_TOKEN") != "" {
+	if os.Getenv("JIRA_BASE_URL") != "" && (os.Getenv("JIRA_API_TOKEN") != "" || hasOAuthEnv("JIRA")) {
 		tools = append(tools, "jira")
 	}
-	if os.Getenv("CONFLUENCE_BASE_URL") != "" && os.Getenv("CONFLUENCE_API_TOKEN") != "" {
+	if os.Getenv("CONFLUENCE_BASE_URL") != "" && (os.Getenv("CONFLUENCE_API_TOKEN") != "" || hasOAuthEnv("CONFLUENCE")) {
 		tools = append(tools, "confluence")
 	}
 	sort.Strings(tools)
 	return tools
 }
 
+func hasOAuthEnv(prefix string) bool {
+	return strings.TrimSpace(os.Getenv(prefix+"_OAUTH_ACCESS_TOKEN")) != "" ||
+		strings.TrimSpace(os.Getenv(prefix+"_OAUTH_REFRESH_TOKEN")) != ""
+}
+
 // buildContext runs doctor checks and returns context information.
 func buildContext(rootCmd *cobra.Command) map[string]any {
 	checks := runDoctorChecks(cli.RetryConfig{
+		Context:        rootCmd.Context(),
 		Timeout:        10.0,
 		Retries:        1,
 		RetryBaseDelay: 0.5,
@@ -253,8 +268,8 @@ func agentPrompt(manifest map[string]any) string {
 	lines = append(lines, "- Defaults: optional `.cojira.json` (default project/space/root page)")
 	lines = append(lines, "")
 	lines = append(lines, "Not supported (tell the user clearly if asked):")
-	lines = append(lines, "- Jira: board columns, filters, dashboards, project admin")
-	lines = append(lines, "- Confluence: attachments, permissions, page versions, templates, blog posts")
+	lines = append(lines, "- Jira: board columns, filters, project admin")
+	lines = append(lines, "- Confluence: templates, PDF export, Word export")
 	lines = append(lines, "")
 	lines = append(lines, "Common workflows:")
 	lines = append(lines, "- Confluence: `cojira confluence info <page> --output-mode json` -> `get` -> edit XHTML -> `update`")
@@ -300,7 +315,7 @@ func identList(identifiers map[string]any, key string) []string {
 }
 
 func runDescribe(cmd *cobra.Command, rootCmd *cobra.Command) error {
-	dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
+	dotenv.LoadDefaultOnce()
 	cli.NormalizeOutputMode(cmd)
 
 	manifest := buildManifest(rootCmd)

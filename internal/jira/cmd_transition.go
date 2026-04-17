@@ -1,13 +1,17 @@
 package jira
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/notabhay/cojira/internal/cli"
 	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/idempotency"
 	"github.com/notabhay/cojira/internal/output"
+	"github.com/notabhay/cojira/internal/undo"
 	"github.com/spf13/cobra"
 )
 
@@ -24,9 +28,39 @@ func NewTransitionCmd() *cobra.Command {
 	cmd.Flags().Bool("no-notify", false, "Disable notifications")
 	cmd.Flags().Bool("dry-run", false, "Preview transition without applying")
 	cmd.Flags().Bool("plan", false, "Alias for --dry-run")
+	cmd.Flags().Bool("interactive", false, "Interactively choose a transition when running in a TTY")
 	cli.AddOutputFlags(cmd, true)
 	cli.AddIdempotencyFlags(cmd)
 	return cmd
+}
+
+var promptTransitionChoice = func(options []map[string]any) (map[string]any, error) {
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Println("Available transitions:")
+		fmt.Println()
+		rows := make([][]string, 0, len(options))
+		for idx, item := range options {
+			rows = append(rows, []string{
+				fmt.Sprintf("%d", idx+1),
+				normalizeMaybeString(item["id"]),
+				output.StatusBadge(safeString(item, "to", "name")),
+				normalizeMaybeString(item["name"]),
+			})
+		}
+		fmt.Println(output.TableString([]string{"#", "ID", "TO", "NAME"}, rows))
+		fmt.Print("\nChoose a transition number: ")
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		index, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil || index < 1 || index > len(options) {
+			fmt.Println("Invalid selection.")
+			continue
+		}
+		return options[index-1], nil
+	}
 }
 
 func runTransition(cmd *cobra.Command, args []string) error {
@@ -48,6 +82,7 @@ func runTransition(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	idemKey, _ := cmd.Flags().GetString("idempotency-key")
 	quiet, _ := cmd.Flags().GetBool("quiet")
+	interactive, _ := cmd.Flags().GetBool("interactive")
 
 	if transitionArg != "" && toFlag != "" {
 		msg := "Use either a transition ID or --to, not both."
@@ -63,7 +98,7 @@ func runTransition(cmd *cobra.Command, args []string) error {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", msg)
 		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: msg, ExitCode: 2}
 	}
-	if transitionArg == "" && toFlag == "" {
+	if transitionArg == "" && toFlag == "" && !interactive {
 		msg := "Missing transition. Provide a transition ID or --to \"Status\"."
 		if mode == "json" {
 			errObj, _ := output.ErrorObj(cerrors.OpFailed, msg, "", "", nil)
@@ -76,6 +111,9 @@ func runTransition(cmd *cobra.Command, args []string) error {
 		}
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Error: %s\n", msg)
 		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: msg, ExitCode: 2}
+	}
+	if interactive && !output.IsTTY(int(os.Stdin.Fd())) {
+		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "--interactive requires a TTY.", ExitCode: 2}
 	}
 
 	issue, err := client.GetIssue(issueID, "status", "")
@@ -158,6 +196,30 @@ func runTransition(cmd *cobra.Command, args []string) error {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: Multiple transitions found for status %q, using the first match.\n", toFlag)
 			}
 		}
+		if interactive && len(matches) > 1 {
+			chosen, err := promptTransitionChoice(coerceJSONArray(matches))
+			if err != nil {
+				return err
+			}
+			transitionID = normalizeMaybeString(chosen["id"])
+			toStatus = safeString(chosen, "to", "name")
+			warnings = nil
+		}
+	} else if interactive {
+		data, err := client.ListTransitions(issueID)
+		if err != nil {
+			return err
+		}
+		transitions, _ := data["transitions"].([]any)
+		if len(transitions) == 0 {
+			return &cerrors.CojiraError{Code: cerrors.TransitionNotFound, Message: fmt.Sprintf("No transitions found for %s.", issueID), ExitCode: 1}
+		}
+		chosen, err := promptTransitionChoice(coerceJSONArray(transitions))
+		if err != nil {
+			return err
+		}
+		transitionID = normalizeMaybeString(chosen["id"])
+		toStatus = safeString(chosen, "to", "name")
 	} else {
 		transitionID = transitionArg
 	}
@@ -172,6 +234,15 @@ func runTransition(cmd *cobra.Command, args []string) error {
 			payload[k] = v
 		}
 		payload["transition"] = map[string]any{"id": transitionID}
+	}
+	undoFields := map[string]any{}
+	if names := payloadFieldNames(payload); len(names) > 0 {
+		fields := append([]string{"status"}, names...)
+		issueForUndo, err := client.GetIssue(issueID, strings.Join(fields, ","), "")
+		if err == nil {
+			currentFields, _ := issueForUndo["fields"].(map[string]any)
+			undoFields = snapshotFieldValues(currentFields, names)
+		}
 	}
 
 	if dryRun {
@@ -240,6 +311,7 @@ func runTransition(cmd *cobra.Command, args []string) error {
 	}
 	fd2, _ := issue2["fields"].(map[string]any)
 	newStatus := safeString(fd2, "status", "name")
+	recordUndoEntry(undo.NewGroupID("jira.transition"), issueID, "jira.transition", undoFields, fromStatus, newStatus)
 
 	receipt := output.Receipt{
 		OK:      true,

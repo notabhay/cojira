@@ -45,46 +45,17 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	fields, _ := cmd.Flags().GetString("fields")
 	expand, _ := cmd.Flags().GetString("expand")
 	outputFile, _ := cmd.Flags().GetString("output")
-
-	if pageSize <= 0 {
-		pageSize = 100
-	}
-
-	data, err := client.Search(jql, limit, start, fields, expand)
+	issues, total, err := searchAllIssues(client, jql, limit, start, pageSize, fields, expand, fetchAll)
 	if err != nil {
 		return err
 	}
-
-	issues, _ := data["issues"].([]any)
-	total := intFromAny(data["total"], len(issues))
-	if fetchAll {
-		collected := make([]any, 0, len(issues))
-		collected = append(collected, issues...)
-		nextStart := start + len(issues)
-		for nextStart < total {
-			pageLimit := pageSize
-			if limit > 0 {
-				remaining := limit - len(collected)
-				if remaining <= 0 {
-					break
-				}
-				if remaining < pageLimit {
-					pageLimit = remaining
-				}
-			}
-			page, err := client.Search(jql, pageLimit, nextStart, fields, expand)
-			if err != nil {
-				return err
-			}
-			pageIssues, _ := page["issues"].([]any)
-			if len(pageIssues) == 0 {
-				break
-			}
-			collected = append(collected, pageIssues...)
-			nextStart += len(pageIssues)
-		}
-		data["issues"] = collected
-		issues = collected
+	recordSearchRecents(client, issues, "search")
+	data := map[string]any{
+		"issues":      issues,
+		"total":       total,
+		"startAt":     start,
+		"maxResults":  limit,
+		"fetched_all": fetchAll,
 	}
 
 	if outputFile != "" {
@@ -139,21 +110,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Printf("Found %d issue(s):\n\n", len(issues))
 	}
-	for _, i := range issues {
-		issue, ok := i.(map[string]any)
-		if !ok {
-			continue
-		}
-		fd, _ := issue["fields"].(map[string]any)
-		if fd == nil {
-			fd = map[string]any{}
-		}
-		key, _ := issue["key"].(string)
-		summary, _ := fd["summary"].(string)
-		status := safeString(fd, "status", "name")
-		assignee := safeString(fd, "assignee", "displayName")
-		fmt.Printf("  %-12s [%s] %s (assignee: %s)\n", key, status, summary, assignee)
-	}
+	printIssueSearchRows(issues)
 	return nil
 }
 

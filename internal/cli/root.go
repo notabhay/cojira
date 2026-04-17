@@ -32,6 +32,7 @@ Tools:
   doctor       Pre-flight config/connectivity checks
   init         Interactive setup wizard for humans
   plan         Preview a command without applying changes
+  convert      Convert markdown into Confluence storage XHTML or Jira wiki text
   bootstrap    Merge cojira guidance into AGENTS.md and CLAUDE.md
   confluence   Confluence page management
   jira         Jira issue management
@@ -40,6 +41,7 @@ Examples:
   cojira describe --output-mode json
   cojira do 'move PROJ-123 to Done'
   cojira doctor
+  cojira convert --from markdown --to jira-wiki -f note.md
   cojira bootstrap
   cojira confluence --help
   cojira jira --help`,
@@ -74,7 +76,7 @@ func tryExpandAlias(tool string, rest []string, depth int) []string {
 
 	builtins := map[string]bool{
 		"confluence": true, "jira": true, "bootstrap": true,
-		"describe": true, "do": true, "doctor": true,
+		"describe": true, "do": true, "doctor": true, "convert": true,
 		"init": true, "plan": true, "help": true,
 		"completion": true,
 	}
@@ -82,7 +84,7 @@ func tryExpandAlias(tool string, rest []string, depth int) []string {
 		return nil
 	}
 
-	dotenv.LoadIfPresent(dotenv.DefaultSearchPaths())
+	dotenv.LoadDefaultOnce()
 	projCfg, err := config.LoadProjectConfig(nil)
 	if err != nil || projCfg == nil {
 		return nil

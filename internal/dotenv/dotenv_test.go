@@ -100,6 +100,24 @@ func TestLoadIfPresentMergesMultipleFiles(t *testing.T) {
 	assert.Equal(t, "workspace", os.Getenv("COJIRA_SHARED"))
 }
 
+func TestLoadIfPresentOnceCachesByPathSet(t *testing.T) {
+	dir := t.TempDir()
+	envFile := filepath.Join(dir, ".env")
+	require.NoError(t, os.WriteFile(envFile, []byte("COJIRA_ONCE=first\n"), 0o644))
+
+	_ = os.Unsetenv("COJIRA_ONCE")
+	loaded := LoadIfPresentOnce([]string{envFile})
+	assert.Equal(t, envFile, loaded)
+	assert.Equal(t, "first", os.Getenv("COJIRA_ONCE"))
+
+	require.NoError(t, os.WriteFile(envFile, []byte("COJIRA_ONCE=second\n"), 0o644))
+	_ = os.Unsetenv("COJIRA_ONCE")
+
+	loaded = LoadIfPresentOnce([]string{envFile})
+	assert.Equal(t, envFile, loaded)
+	assert.Empty(t, os.Getenv("COJIRA_ONCE"))
+}
+
 func TestDefaultSearchPaths(t *testing.T) {
 	paths := DefaultSearchPaths()
 	require.NotEmpty(t, paths)

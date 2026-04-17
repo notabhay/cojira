@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/notabhay/cojira/internal/cli"
 	cerrors "github.com/notabhay/cojira/internal/errors"
@@ -23,6 +24,7 @@ func NewCopyTreeCmd() *cobra.Command {
 	}
 	cmd.Flags().String("title-prefix", "", "Prefix to apply to copied page titles")
 	cmd.Flags().Bool("strict", false, "Fail instead of falling back when copy API is unavailable")
+	cmd.Flags().Int("concurrency", 1, "Number of concurrent copy-tree workers (default: 1, max: 10)")
 	cmd.Flags().Bool("dry-run", false, "Preview actions without applying")
 	cmd.Flags().Bool("plan", false, "Alias for --dry-run")
 	cli.AddOutputFlags(cmd, true)
@@ -45,6 +47,8 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 	parentArg := args[1]
 	titlePrefix, _ := cmd.Flags().GetString("title-prefix")
 	strict, _ := cmd.Flags().GetBool("strict")
+	concurrency, _ := cmd.Flags().GetInt("concurrency")
+	concurrency = cli.ClampConcurrency(concurrency)
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 	reqID := output.RequestID()
@@ -86,20 +90,7 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 
 	// Dry-run: count pages in tree.
 	if dryRun {
-		count := 1
-		stack := []string{pageID}
-		for len(stack) > 0 {
-			pid := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			children, _ := client.GetChildren(pid, 100)
-			for _, child := range children {
-				childID, _ := child["id"].(string)
-				if childID != "" {
-					count++
-					stack = append(stack, childID)
-				}
-			}
-		}
+		count := countPageTree(client, pageID, newConfluenceSemaphore(concurrency))
 
 		receipt := output.Receipt{
 			OK:      true,
@@ -267,35 +258,84 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 		Title string `json:"title"`
 	}
 	var created []createdPage
+	sem := newConfluenceSemaphore(concurrency)
 
-	var copyRecursive func(srcID, dstParent string) (string, error)
-	copyRecursive = func(srcID, dstParent string) (string, error) {
-		page, fetchErr := client.GetPageByID(srcID, "body.storage")
+	var copyRecursive func(srcID, dstParent string) (string, []createdPage, error)
+	copyRecursive = func(srcID, dstParent string) (string, []createdPage, error) {
+		var (
+			page     map[string]any
+			fetchErr error
+		)
+		withConfluenceSemaphore(sem, func() {
+			page, fetchErr = client.GetPageByID(srcID, "body.storage")
+		})
 		if fetchErr != nil {
-			return "", fetchErr
+			return "", nil, fetchErr
 		}
 		pageTitle, _ := page["title"].(string)
 		pageBody := getNestedString(page, "body", "storage", "value")
 
-		newID, newTitle, createErr := createUniqueTitle(client, destSpace, titlePrefix+pageTitle, pageBody, dstParent)
+		newID, newTitle, createErr := createUniqueTitle(client, destSpace, titlePrefix+pageTitle, pageBody, dstParent, sem)
 		if createErr != nil {
-			return "", createErr
+			return "", nil, createErr
 		}
-		created = append(created, createdPage{SrcID: srcID, DstID: newID, Title: newTitle})
+		subtreeCreated := []createdPage{{SrcID: srcID, DstID: newID, Title: newTitle}}
 
-		children, _ := client.GetChildren(srcID, 100)
-		for _, child := range children {
-			childID, _ := child["id"].(string)
-			if childID != "" {
-				if _, copyErr := copyRecursive(childID, newID); copyErr != nil {
-					return "", copyErr
-				}
-			}
+		children, err := getChildrenConcurrent(client, srcID, sem)
+		if err != nil {
+			return "", nil, err
 		}
-		return newID, nil
+		if len(children) == 0 {
+			return newID, subtreeCreated, nil
+		}
+
+		if concurrency <= 1 || len(children) == 1 {
+			for _, child := range children {
+				childID, _ := child["id"].(string)
+				if childID == "" {
+					continue
+				}
+				_, childCreated, copyErr := copyRecursive(childID, newID)
+				if copyErr != nil {
+					return "", nil, copyErr
+				}
+				subtreeCreated = append(subtreeCreated, childCreated...)
+			}
+			return newID, subtreeCreated, nil
+		}
+
+		type childResult struct {
+			newID   string
+			created []createdPage
+			err     error
+		}
+		results := make([]childResult, len(children))
+		var wg sync.WaitGroup
+		for idx, child := range children {
+			idx := idx
+			child := child
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				childID, _ := child["id"].(string)
+				if childID == "" {
+					return
+				}
+				childNewID, childCreated, childErr := copyRecursive(childID, newID)
+				results[idx] = childResult{newID: childNewID, created: childCreated, err: childErr}
+			}()
+		}
+		wg.Wait()
+		for _, result := range results {
+			if result.err != nil {
+				return "", nil, result.err
+			}
+			subtreeCreated = append(subtreeCreated, result.created...)
+		}
+		return newID, subtreeCreated, nil
 	}
 
-	newRootID, err := copyRecursive(pageID, parentID)
+	newRootID, created, err := copyRecursive(pageID, parentID)
 	if err != nil {
 		if mode == "json" {
 			errObj, _ := output.ErrorObj(cerrors.CopyFailed, err.Error(), "", "", nil)
@@ -345,7 +385,7 @@ func runCopyTree(cmd *cobra.Command, args []string) error {
 }
 
 // createUniqueTitle attempts to create a page, retrying with "(Copy N)" suffix on title conflicts.
-func createUniqueTitle(client *Client, space, baseTitle, body, parentID string) (string, string, error) {
+func createUniqueTitle(client *Client, space, baseTitle, body, parentID string, sem chan struct{}) (string, string, error) {
 	var lastErr error
 	for i := 0; i < 10; i++ {
 		attemptTitle := baseTitle
@@ -368,7 +408,13 @@ func createUniqueTitle(client *Client, space, baseTitle, body, parentID string) 
 			payload["ancestors"] = []map[string]any{{"id": parentID}}
 		}
 
-		result, err := client.CreatePage(payload)
+		var (
+			result map[string]any
+			err    error
+		)
+		withConfluenceSemaphore(sem, func() {
+			result, err = client.CreatePage(payload)
+		})
 		if err == nil {
 			newID := fmt.Sprintf("%v", result["id"])
 			return newID, attemptTitle, nil

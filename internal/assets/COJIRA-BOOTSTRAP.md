@@ -81,10 +81,11 @@ create it before continuing.
 
 ### 3. Token creation pages
 
-If the user needs to create tokens, send them to:
+If the user needs to create tokens:
 
-- Jira: `https://jira.rakuten-it.com/jira/secure/ViewProfile.jspa?selectedTab=com.atlassian.pats.pats-plugin:jira-user-personal-access-tokens`
-- Confluence: `https://confluence.rakuten-it.com/confluence/plugins/personalaccesstokens/usertokens.action`
+- prefer tenant-specific Personal Access Token pages for the Jira and Confluence instance in `.env`,
+- if this workspace is for a known internal tenant and you already know those URLs, you can share them,
+- otherwise ask the user to open their Jira or Confluence profile/settings area and create a Personal Access Token there.
 
 Do not ask them to paste the resulting tokens into chat. They should put them directly into `.env`.
 
@@ -99,14 +100,14 @@ After the user says they have updated `.env`:
 
 Expected keys:
 
-- `CONFLUENCE_BASE_URL` should already be prefilled as `https://confluence.rakuten-it.com/confluence/`
-- `JIRA_BASE_URL` should already be prefilled as `https://jira.rakuten-it.com/jira`
-- The user only needs to fill:
-  - `CONFLUENCE_API_TOKEN`
-  - `JIRA_API_TOKEN`
+- `CONFLUENCE_BASE_URL`
+- `CONFLUENCE_API_TOKEN`
+- `JIRA_BASE_URL`
+- `JIRA_API_TOKEN`
 
-Only ask the user to change the base URLs if this workspace is being used against a different Jira or
-Confluence instance.
+Some bundles may prefill the base URLs. Others may use generic example values. If the base URLs still
+look like placeholders, ask the user to replace them with the correct Jira and Confluence URLs for
+their environment before continuing.
 
 ### 5. Sync credentials globally
 
@@ -207,14 +208,14 @@ Before executing a dangerous action:
 
 `cojira` supports:
 
-- Jira issue reads/search/update/create/transition/batch/bulk sync flows
-- Jira board issue listing
+- Jira issue reads/search/update/create/clone/transition/comment/attachment/link/watcher/worklog/delete/batch/bulk sync flows
+- Jira dashboards, board issue listing, board views, history/diff, sprint admin, and board or sprint reports
 - experimental Jira board swimlane and detail-view configuration
 - Confluence page reads/search/tree/create/update/rename/move/archive/copy-tree/batch
 
 It does **not** support:
 
-- Jira comments, attachments, issue links, sprint admin, dashboards, delete issue
+- Jira project-administration workflows
 - Confluence comments, attachments, permissions admin, delete page, export to PDF/Word
 
 ### Workspace cleanup

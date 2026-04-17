@@ -59,12 +59,14 @@ func runUsers(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Users (%d):\n\n", len(users))
+	rows := make([][]string, 0, len(users))
 	for _, user := range users {
-		fmt.Printf("  %-32s %-32v %v\n",
-			formatUserDisplay(user),
-			user["accountId"],
-			user["name"],
-		)
+		rows = append(rows, []string{
+			output.Truncate(formatUserDisplay(user), 32),
+			output.Truncate(normalizeMaybeString(user["accountId"]), 32),
+			output.Truncate(normalizeMaybeString(user["name"]), 24),
+		})
 	}
+	fmt.Println(output.TableString([]string{"DISPLAY", "ACCOUNT ID", "USERNAME"}, rows))
 	return nil
 }

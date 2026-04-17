@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -262,4 +263,49 @@ func TestOnRetryCallbackForExceptions(t *testing.T) {
 	require.Len(t, calls, 1)
 	assert.Equal(t, 1, calls[0].attempt)
 	assert.Equal(t, 0, calls[0].status) // 0 indicates exception, not HTTP status
+}
+
+func TestRequestWithRetryStopsWhenContextAlreadyCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	callCount := 0
+	cfg := RetryConfig{
+		Context:       ctx,
+		Retries:       3,
+		RetryStatuses: map[int]bool{429: true},
+		Sleep:         noSleep,
+	}
+
+	_, err := RequestWithRetry(func() (*http.Response, error) {
+		callCount++
+		return &http.Response{StatusCode: 200, Header: http.Header{}}, nil
+	}, cfg, nil)
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 0, callCount)
+}
+
+func TestRequestWithRetryStopsDuringBackoffSleepWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cfg := RetryConfig{
+		Context:         ctx,
+		Retries:         3,
+		BaseDelay:       50 * time.Millisecond,
+		MaxDelay:        50 * time.Millisecond,
+		JitterRatio:     0.0,
+		RetryExceptions: true,
+		RetryStatuses:   map[int]bool{429: true},
+	}
+
+	callCount := 0
+	_, err := RequestWithRetry(func() (*http.Response, error) {
+		callCount++
+		return nil, errors.New("boom")
+	}, cfg, func(attempt int, delay time.Duration, statusCode int) {
+		cancel()
+	})
+
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, callCount)
 }

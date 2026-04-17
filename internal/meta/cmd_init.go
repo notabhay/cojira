@@ -182,6 +182,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 
 	// Run doctor checks.
 	results := runDoctorChecks(cli.RetryConfig{
+		Context:        cmd.Context(),
 		Timeout:        30.0,
 		Retries:        2,
 		RetryBaseDelay: 0.5,

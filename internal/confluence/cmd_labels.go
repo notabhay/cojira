@@ -13,11 +13,12 @@ import (
 func NewLabelsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "labels <page>",
-		Short: "List or add Confluence labels",
+		Short: "List, add, or remove Confluence labels",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runLabels,
 	}
 	cmd.Flags().StringArray("add", nil, "Label to add (repeatable)")
+	cmd.Flags().StringArray("remove", nil, "Label to remove (repeatable)")
 	cmd.Flags().Bool("all", false, "Fetch all labels")
 	cmd.Flags().Int("limit", 25, "Maximum labels to fetch")
 	cmd.Flags().Int("start", 0, "Start offset")
@@ -38,12 +39,14 @@ func runLabels(cmd *cobra.Command, args []string) error {
 
 	cfgData := loadProjectConfigData()
 	defPageID := defaultPageID(cfgData)
-	pageID, err := ResolvePageID(client, args[0], defPageID)
+	pageArg := args[0]
+	pageID, err := ResolvePageID(client, pageArg, defPageID)
 	if err != nil {
 		return err
 	}
 
 	labelsToAdd, _ := cmd.Flags().GetStringArray("add")
+	labelsToRemove, _ := cmd.Flags().GetStringArray("remove")
 	all, _ := cmd.Flags().GetBool("all")
 	limit, _ := cmd.Flags().GetInt("limit")
 	start, _ := cmd.Flags().GetInt("start")
@@ -55,7 +58,7 @@ func runLabels(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if len(labelsToAdd) == 0 {
+	if len(labelsToAdd) == 0 && len(labelsToRemove) == 0 {
 		return printLabels(mode, pageID, existing)
 	}
 
@@ -65,6 +68,7 @@ func runLabels(cmd *cobra.Command, args []string) error {
 	}
 
 	var addList []string
+	var removeList []string
 	var skipped []string
 	for _, label := range labelsToAdd {
 		trimmed := strings.TrimSpace(label)
@@ -77,9 +81,32 @@ func runLabels(cmd *cobra.Command, args []string) error {
 		}
 		addList = append(addList, trimmed)
 	}
+	for _, label := range labelsToRemove {
+		trimmed := strings.TrimSpace(label)
+		if trimmed == "" {
+			continue
+		}
+		if !existingSet[strings.ToLower(trimmed)] {
+			skipped = append(skipped, trimmed)
+			continue
+		}
+		removeList = append(removeList, trimmed)
+	}
 
-	target := map[string]any{"page": args[0], "page_id": pageID}
-	result := map[string]any{"add": addList, "skipped": skipped}
+	target := map[string]any{"page": pageArg, "page_id": pageID}
+	result := map[string]any{"add": addList, "remove": removeList, "skipped": skipped}
+	if len(addList) == 0 && len(removeList) == 0 {
+		result["changed"] = false
+		if mode == "json" {
+			return output.PrintJSON(output.BuildEnvelope(true, "confluence", "labels", target, result, nil, nil, "", "", "", nil))
+		}
+		if mode == "summary" {
+			fmt.Printf("No label changes needed for page %s.\n", pageID)
+			return nil
+		}
+		fmt.Printf("No label changes needed for page %s.\n", pageID)
+		return nil
+	}
 
 	if planMode {
 		result["plan"] = true
@@ -87,10 +114,10 @@ func runLabels(cmd *cobra.Command, args []string) error {
 			return output.PrintJSON(output.BuildEnvelope(true, "confluence", "labels", target, result, nil, nil, "", "", "", nil))
 		}
 		if mode == "summary" {
-			fmt.Printf("Would add %d label(s) to page %s.\n", len(addList), pageID)
+			fmt.Printf("Would add %d and remove %d label(s) on page %s.\n", len(addList), len(removeList), pageID)
 			return nil
 		}
-		fmt.Printf("Would add %d label(s) to page %s.\n", len(addList), pageID)
+		fmt.Printf("Would add %d and remove %d label(s) on page %s.\n", len(addList), len(removeList), pageID)
 		return nil
 	}
 
@@ -99,16 +126,27 @@ func runLabels(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
+	for _, label := range removeList {
+		if err := client.DeletePageLabel(pageID, label); err != nil {
+			return err
+		}
+	}
 
 	result["added"] = len(addList)
+	result["removed"] = len(removeList)
 	if mode == "json" {
 		return output.PrintJSON(output.BuildEnvelope(true, "confluence", "labels", target, result, nil, nil, "", "", "", nil))
 	}
 	if mode == "summary" {
-		fmt.Printf("Added %d label(s) to page %s.\n", len(addList), pageID)
+		fmt.Printf("Updated labels on page %s: added %d, removed %d.\n", pageID, len(addList), len(removeList))
 		return nil
 	}
-	fmt.Printf("Added labels to %s: %s\n", pageID, strings.Join(addList, ", "))
+	if len(addList) > 0 {
+		fmt.Printf("Added labels to %s: %s\n", pageID, strings.Join(addList, ", "))
+	}
+	if len(removeList) > 0 {
+		fmt.Printf("Removed labels from %s: %s\n", pageID, strings.Join(removeList, ", "))
+	}
 	return nil
 }
 
@@ -176,8 +214,10 @@ func printLabels(mode, pageID string, labels []string) error {
 	}
 
 	fmt.Printf("Labels on %s:\n\n", pageID)
+	rows := make([][]string, 0, len(labels))
 	for _, label := range labels {
-		fmt.Printf("  - %s\n", label)
+		rows = append(rows, []string{label})
 	}
+	fmt.Println(output.TableString([]string{"LABEL"}, rows))
 	return nil
 }

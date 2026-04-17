@@ -9,6 +9,7 @@ import (
 	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/idempotency"
 	"github.com/notabhay/cojira/internal/output"
+	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/spf13/cobra"
 )
 
@@ -21,6 +22,7 @@ func NewUpdateCmd() *cobra.Command {
 		RunE:  runUpdate,
 	}
 	cmd.Flags().String("title", "", "New title (optional)")
+	cmd.Flags().String("format", "storage", "Body format: storage or markdown")
 	cmd.Flags().Bool("minor", false, "Mark as minor edit")
 	cmd.Flags().Bool("diff", false, "Show a unified diff and exit without updating")
 	cmd.Flags().Bool("preview", false, "Alias for --diff")
@@ -45,6 +47,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	pageArg := args[0]
 	filePath := args[1]
 	titleFlag, _ := cmd.Flags().GetString("title")
+	format, _ := cmd.Flags().GetString("format")
 	minorEdit, _ := cmd.Flags().GetBool("minor")
 	diffMode, _ := cmd.Flags().GetBool("diff")
 	previewMode, _ := cmd.Flags().GetBool("preview")
@@ -90,6 +93,10 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Fprintln(os.Stderr, "Error: Refusing to update with empty content.")
 		return &cerrors.CojiraError{Code: cerrors.EmptyContent, Message: "Refusing to update with empty content.", ExitCode: 1}
+	}
+	content, err = convertStorageBody(content, format)
+	if err != nil {
+		return err
 	}
 
 	// Fetch current page.
@@ -244,15 +251,20 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// computeUnifiedDiff computes a simple line-based diff between two strings.
-// Returns the diff text, addition count, and deletion count.
+// computeUnifiedDiff computes a line-oriented diff between two strings using
+// a real diff algorithm instead of the older sequential scan.
 func computeUnifiedDiff(oldContent, newContent, label string) (string, int, int) {
-	oldLines := strings.Split(oldContent, "\n")
-	newLines := strings.Split(newContent, "\n")
-
-	if strings.Join(oldLines, "\n") == strings.Join(newLines, "\n") {
+	if oldContent == newContent {
 		return "", 0, 0
 	}
+
+	dmp := diffmatchpatch.New()
+	chars1, chars2, lineArray := dmp.DiffLinesToChars(
+		ensureTrailingNewline(oldContent),
+		ensureTrailingNewline(newContent),
+	)
+	diffs := dmp.DiffMain(chars1, chars2, false)
+	diffs = dmp.DiffCharsToLines(diffs, lineArray)
 
 	var diffLines []string
 	diffLines = append(diffLines, fmt.Sprintf("--- %s.current", label))
@@ -261,22 +273,42 @@ func computeUnifiedDiff(oldContent, newContent, label string) (string, int, int)
 	additions := 0
 	deletions := 0
 
-	i, j := 0, 0
-	for i < len(oldLines) || j < len(newLines) {
-		if i < len(oldLines) && j < len(newLines) && oldLines[i] == newLines[j] {
-			diffLines = append(diffLines, " "+oldLines[i])
-			i++
-			j++
-		} else if i < len(oldLines) {
-			diffLines = append(diffLines, "-"+oldLines[i])
-			deletions++
-			i++
-		} else if j < len(newLines) {
-			diffLines = append(diffLines, "+"+newLines[j])
-			additions++
-			j++
+	for _, diff := range diffs {
+		lines := splitDiffLines(diff.Text)
+		if len(lines) == 0 {
+			continue
+		}
+		for _, line := range lines {
+			switch diff.Type {
+			case diffmatchpatch.DiffEqual:
+				diffLines = append(diffLines, " "+line)
+			case diffmatchpatch.DiffDelete:
+				diffLines = append(diffLines, "-"+line)
+				deletions++
+			case diffmatchpatch.DiffInsert:
+				diffLines = append(diffLines, "+"+line)
+				additions++
+			}
 		}
 	}
 
 	return strings.Join(diffLines, "\n"), additions, deletions
+}
+
+func splitDiffLines(text string) []string {
+	if text == "" {
+		return nil
+	}
+	lines := strings.Split(text, "\n")
+	if strings.HasSuffix(text, "\n") {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func ensureTrailingNewline(text string) string {
+	if strings.HasSuffix(text, "\n") {
+		return text
+	}
+	return text + "\n"
 }

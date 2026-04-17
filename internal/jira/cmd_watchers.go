@@ -64,9 +64,20 @@ func runWatchers(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 		fmt.Printf("Watchers on %s (%d):\n\n", issueID, count)
-		for _, watcher := range coerceJSONArray(getMapArray(data, "watchers")) {
-			fmt.Printf("  - %s\n", formatUserDisplay(watcher))
+		watchers := coerceJSONArray(getMapArray(data, "watchers"))
+		if len(watchers) == 0 {
+			fmt.Println("No watchers found.")
+			return nil
 		}
+		rows := make([][]string, 0, len(watchers))
+		for _, watcher := range watchers {
+			rows = append(rows, []string{
+				output.Truncate(formatUserDisplay(watcher), 32),
+				output.Truncate(normalizeMaybeString(watcher["emailAddress"]), 28),
+				output.Truncate(stringOr(watcher["accountId"], normalizeMaybeString(watcher["name"])), 28),
+			})
+		}
+		fmt.Println(output.TableString([]string{"DISPLAY", "EMAIL", "ACCOUNT"}, rows))
 		return nil
 	}
 

@@ -9,8 +9,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	cerrors "github.com/notabhay/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/markdownconv"
+	"github.com/notabhay/cojira/internal/output"
 )
 
 // readJSONFile reads and parses a JSON file, returning a map.
@@ -68,6 +71,29 @@ func readTextFile(path string) (string, error) {
 		}
 	}
 	return string(data), nil
+}
+
+func convertCommentBody(bodyText, format string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "raw", "jira", "jira-wiki":
+		return bodyText, nil
+	case "markdown", "md":
+		converted, err := markdownconv.ToJiraWiki(bodyText)
+		if err != nil {
+			return "", &cerrors.CojiraError{
+				Code:     cerrors.OpFailed,
+				Message:  fmt.Sprintf("Failed to convert Markdown comment body: %v", err),
+				ExitCode: 1,
+			}
+		}
+		return converted, nil
+	default:
+		return "", &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  fmt.Sprintf("Unsupported comment format %q. Use raw or markdown.", format),
+			ExitCode: 2,
+		}
+	}
 }
 
 // formatValue formats an arbitrary value for human display, truncating if needed.
@@ -216,6 +242,85 @@ func printFailures(failures []failureEntry) {
 	}
 }
 
+func searchAllIssues(client *Client, jql string, limit, startAt, pageSize int, fields, expand string, fetchAll bool) ([]map[string]any, int, error) {
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+	if limit <= 0 && !fetchAll {
+		limit = 20
+	}
+
+	pageLimit := limit
+	if fetchAll || pageLimit <= 0 || pageLimit > pageSize {
+		pageLimit = pageSize
+	}
+	data, err := client.Search(jql, pageLimit, startAt, fields, expand)
+	if err != nil {
+		return nil, 0, err
+	}
+	rawIssues, _ := data["issues"].([]any)
+	total := intFromAny(data["total"], len(rawIssues))
+	collected := coerceJSONArray(rawIssues)
+	startAt += len(rawIssues)
+
+	if fetchAll {
+		for startAt < total {
+			page, err := client.Search(jql, pageSize, startAt, fields, expand)
+			if err != nil {
+				return nil, 0, err
+			}
+			pageIssues, _ := page["issues"].([]any)
+			if len(pageIssues) == 0 {
+				break
+			}
+			collected = append(collected, coerceJSONArray(pageIssues)...)
+			startAt += len(pageIssues)
+		}
+	} else if limit > 0 && len(collected) > limit {
+		collected = collected[:limit]
+	}
+
+	return collected, total, nil
+}
+
+func printIssueSearchRows(issues []map[string]any) {
+	rows := make([][]string, 0, len(issues))
+	for _, issue := range issues {
+		fd, _ := issue["fields"].(map[string]any)
+		if fd == nil {
+			fd = map[string]any{}
+		}
+		key := normalizeMaybeString(issue["key"])
+		summary := normalizeMaybeString(fd["summary"])
+		status := safeString(fd, "status", "name")
+		assignee := safeString(fd, "assignee", "displayName")
+		if assignee == "" {
+			assignee = "Unassigned"
+		}
+		rows = append(rows, []string{
+			key,
+			output.StatusBadge(status),
+			assignee,
+			output.Truncate(summary, 72),
+		})
+	}
+	if len(rows) == 0 {
+		return
+	}
+	fmt.Println(output.TableString([]string{"KEY", "STATUS", "ASSIGNEE", "SUMMARY"}, rows))
+}
+
+func recordSearchRecents(client *Client, issues []map[string]any, source string) {
+	if len(issues) == 0 {
+		return
+	}
+	items := make([]recentIssue, 0, len(issues))
+	for _, issue := range issues {
+		items = append(items, recentIssueFromIssue(client, issue, source))
+	}
+	_ = recordRecentIssues(items...)
+}
+
 type failureEntry struct {
 	key string
 	err string
@@ -265,6 +370,48 @@ func extractNames(m map[string]any, key string) []string {
 		}
 	}
 	return result
+}
+
+func compactWhitespace(value string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+}
+
+func formatHumanTimestamp(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	for _, layout := range []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05.000-0700",
+		"2006-01-02T15:04:05.000+0000",
+		"2006-01-02T15:04:05-0700",
+		"2006-01-02T15:04:05+0000",
+		"2006-01-02 15:04:05",
+	} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.Format("2006-01-02 15:04")
+		}
+	}
+	return output.Truncate(strings.ReplaceAll(value, "T", " "), 16)
+}
+
+func formatHumanBytes(value any) string {
+	size := int64(intFromAny(value, -1))
+	if size < 0 {
+		return "-"
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	display := float64(size)
+	unit := units[0]
+	for i := 0; i < len(units)-1 && display >= 1024; i++ {
+		display /= 1024
+		unit = units[i+1]
+	}
+	if unit == "B" {
+		return fmt.Sprintf("%d %s", size, unit)
+	}
+	return fmt.Sprintf("%.1f %s", display, unit)
 }
 
 var normTitleRe = regexp.MustCompile(`^\d+-`)

@@ -1,6 +1,7 @@
 package httpclient
 
 import (
+	"context"
 	"math"
 	"math/rand"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 // RetryConfig controls retry behavior for HTTP requests.
 type RetryConfig struct {
+	Context           context.Context
 	Retries           int
 	BaseDelay         time.Duration
 	MaxDelay          time.Duration
@@ -89,6 +91,19 @@ func parseRetryAfter(header string) (time.Duration, bool) {
 }
 
 func (c *RetryConfig) sleep(d time.Duration) {
+	if ctx := c.Context; ctx != nil {
+		if c.Sleep != nil {
+			c.Sleep(d)
+			return
+		}
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+		case <-timer.C:
+		}
+		return
+	}
 	if c.Sleep != nil {
 		c.Sleep(d)
 	} else {
@@ -102,8 +117,14 @@ func (c *RetryConfig) sleep(d time.Duration) {
 func RequestWithRetry(requestFn RequestFunc, config RetryConfig, onRetry OnRetryFunc) (*http.Response, error) {
 	var resp *http.Response
 	var lastErr error
+	ctx := config.Context
 
 	for attempt := 0; attempt <= config.Retries; attempt++ {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 		resp, lastErr = requestFn()
 
 		if lastErr != nil {
@@ -119,6 +140,11 @@ func RequestWithRetry(requestFn RequestFunc, config RetryConfig, onRetry OnRetry
 				onRetry(attempt+1, delay, 0)
 			}
 			config.sleep(delay)
+			if ctx != nil {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+			}
 			continue
 		}
 
@@ -156,6 +182,11 @@ func RequestWithRetry(requestFn RequestFunc, config RetryConfig, onRetry OnRetry
 			onRetry(attempt+1, delay, resp.StatusCode)
 		}
 		config.sleep(delay)
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	if resp != nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -170,6 +171,14 @@ func TestReceiptWithChanges(t *testing.T) {
 	assert.Contains(t, formatted, "  priority: Low -> High")
 }
 
+func TestReceiptColorizedWhenForced(t *testing.T) {
+	SetColorMode("always")
+	defer SetColorMode("")
+	r := &Receipt{OK: true, Message: "colored"}
+	formatted := r.Format()
+	assert.Contains(t, formatted, "\x1b[32mOK\x1b[0m")
+}
+
 // --- IdempotencyKey tests ---
 
 func TestIdempotencyKeyDeterministic(t *testing.T) {
@@ -215,6 +224,43 @@ func TestGetModeFromEnv(t *testing.T) {
 	_ = os.Setenv("COJIRA_OUTPUT_MODE", "summary")
 	defer func() { _ = os.Unsetenv("COJIRA_OUTPUT_MODE") }()
 	assert.Equal(t, "summary", GetMode())
+}
+
+func TestGetColorModeFromEnv(t *testing.T) {
+	SetColorMode("")
+	_ = os.Setenv("COJIRA_COLOR", "never")
+	defer func() { _ = os.Unsetenv("COJIRA_COLOR") }()
+	assert.Equal(t, "never", GetColorMode())
+}
+
+func TestColorizeStatus(t *testing.T) {
+	assert.True(t, strings.Contains(colorizeStatus("FAILED"), "\x1b[31m"))
+	assert.Equal(t, "UNKNOWN", colorizeStatus("UNKNOWN"))
+}
+
+func TestTableString(t *testing.T) {
+	table := TableString([]string{"KEY", "STATUS"}, [][]string{
+		{"PROJ-1", "Done"},
+		{"PROJ-2", "Blocked"},
+	})
+	assert.Contains(t, table, "KEY")
+	assert.Contains(t, table, "STATUS")
+	assert.Contains(t, table, "PROJ-1")
+	assert.Contains(t, table, "PROJ-2")
+}
+
+func TestTruncate(t *testing.T) {
+	assert.Equal(t, "short", Truncate("short", 10))
+	assert.Equal(t, "abcd…", Truncate("abcdef", 5))
+}
+
+func TestStatusBadge(t *testing.T) {
+	SetColorMode("never")
+	assert.Equal(t, "Done", StatusBadge("Done"))
+	SetColorMode("always")
+	assert.Contains(t, StatusBadge("Done"), "\x1b[32m")
+	assert.Contains(t, StatusBadge("Blocked"), "\x1b[31m")
+	SetColorMode("")
 }
 
 // --- ErrorObj tests ---

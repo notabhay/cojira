@@ -383,22 +383,23 @@ func runSprintMutation(cmd *cobra.Command, command string, target map[string]any
 	}
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	idemKey, _ := cmd.Flags().GetString("idempotency-key")
+	actionLabel := humanizeSprintAction(command)
 	if dryRun {
 		if mode == "json" {
 			return output.PrintJSON(output.BuildEnvelope(true, "jira", command, target, map[string]any{"dry_run": true, "payload": payload}, nil, nil, "", "", "", nil))
 		}
 		if mode == "summary" {
-			fmt.Printf("Would apply %s.\n", command)
+			fmt.Printf("Would %s.\n", actionLabel)
 			return nil
 		}
-		fmt.Printf("Would apply %s.\n", command)
+		fmt.Printf("Would %s.\n", actionLabel)
 		return nil
 	}
 	if idemKey != "" && idempotency.IsDuplicate(idemKey) {
 		if mode == "json" {
 			return output.PrintJSON(output.BuildEnvelope(true, "jira", command, target, map[string]any{"skipped": true, "reason": "idempotency_key_already_used"}, nil, nil, "", "", "", nil))
 		}
-		fmt.Printf("Skipped duplicate %s.\n", command)
+		fmt.Printf("Skipped duplicate %s.\n", actionLabel)
 		return nil
 	}
 	result, err := apply(client)
@@ -412,9 +413,24 @@ func runSprintMutation(cmd *cobra.Command, command string, target map[string]any
 		return output.PrintJSON(output.BuildEnvelope(true, "jira", command, target, result, nil, nil, "", "", "", nil))
 	}
 	if mode == "summary" {
-		fmt.Printf("Applied %s.\n", command)
+		fmt.Printf("%s.\n", capitalize(actionLabel))
 		return nil
 	}
-	fmt.Printf("Applied %s.\n", command)
+	fmt.Printf("%s.\n", capitalize(actionLabel))
 	return nil
+}
+
+func humanizeSprintAction(command string) string {
+	switch command {
+	case "sprint.create":
+		return "create the sprint"
+	case "sprint.update":
+		return "update the sprint"
+	case "sprint.start":
+		return "start the sprint"
+	case "sprint.complete":
+		return "complete the sprint"
+	default:
+		return strings.ReplaceAll(command, ".", " ")
+	}
 }

@@ -3,8 +3,11 @@ package confluence
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -30,6 +33,7 @@ func testClient(t *testing.T, server *httptest.Server) *Client {
 		UserAgent:   "test/0.1",
 		Timeout:     5 * time.Second,
 		RetryConfig: noRetryConfig(),
+		CacheConfig: httpclient.CacheConfig{Disabled: true},
 	})
 	require.NoError(t, err)
 	return c
@@ -118,6 +122,101 @@ func TestGetPageByID(t *testing.T) {
 	assert.Equal(t, "Test Page", page["title"])
 }
 
+func TestGetPageByIDV2NormalizesPageShape(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v2/pages/12345", r.URL.Path)
+		assert.Equal(t, "storage", r.URL.Query().Get("body-format"))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":      "12345",
+			"title":   "V2 Page",
+			"spaceId": "777",
+			"version": map[string]any{"number": 2},
+			"body": map[string]any{
+				"representation": "storage",
+				"value":          "<p>hello</p>",
+			},
+			"parentId": "999",
+		})
+	}))
+	defer server.Close()
+
+	c, err := NewClient(ClientConfig{
+		BaseURL:     server.URL,
+		APIVersion:  "2",
+		Token:       "fake-token",
+		UserAgent:   "test/0.1",
+		Timeout:     5 * time.Second,
+		RetryConfig: noRetryConfig(),
+		CacheConfig: httpclient.CacheConfig{Disabled: true},
+	})
+	require.NoError(t, err)
+
+	page, err := c.GetPageByID("12345", "")
+	require.NoError(t, err)
+	assert.Equal(t, "V2 Page", page["title"])
+	assert.Equal(t, "777", safeString(page, "space", "key"))
+	assert.Equal(t, "<p>hello</p>", getNestedString(page, "body", "storage", "value"))
+}
+
+func TestGetPageByIDUsesHTTPCache(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		assert.Equal(t, "/rest/api/content/12345", r.URL.Path)
+		w.Header().Set("ETag", `"page-12345"`)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":    "12345",
+			"title": "Cached Page",
+		})
+	}))
+	defer server.Close()
+
+	c, err := NewClient(ClientConfig{
+		BaseURL:     server.URL,
+		Token:       "fake-token",
+		UserAgent:   "test/0.1",
+		Timeout:     5 * time.Second,
+		RetryConfig: noRetryConfig(),
+		CacheConfig: httpclient.CacheConfig{TTL: time.Hour, Dir: t.TempDir()},
+	})
+	require.NoError(t, err)
+
+	first, err := c.GetPageByID("12345", "")
+	require.NoError(t, err)
+	second, err := c.GetPageByID("12345", "")
+	require.NoError(t, err)
+
+	assert.Equal(t, "12345", first["id"])
+	assert.Equal(t, "12345", second["id"])
+	assert.Equal(t, 1, callCount)
+}
+
+func TestGetPageVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/content/12345", r.URL.Path)
+		assert.Equal(t, "historical", r.URL.Query().Get("status"))
+		assert.Equal(t, "2", r.URL.Query().Get("version"))
+		assert.Equal(t, "body.storage,version", r.URL.Query().Get("expand"))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":     "12345",
+			"title":  "Old Title",
+			"status": "historical",
+			"version": map[string]any{
+				"number": 2,
+			},
+			"body": map[string]any{
+				"storage": map[string]any{"value": "<p>old</p>"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	page, err := c.GetPageVersion("12345", 2, "body.storage,version")
+	require.NoError(t, err)
+	assert.Equal(t, "historical", page["status"])
+}
+
 func TestGetPageByTitle(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/rest/api/content", r.URL.Path)
@@ -136,6 +235,26 @@ func TestGetPageByTitle(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, page)
 	assert.Equal(t, "12345", page["id"])
+}
+
+func TestListBlogPosts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/content", r.URL.Path)
+		assert.Equal(t, "blogpost", r.URL.Query().Get("type"))
+		assert.Equal(t, "TEAM", r.URL.Query().Get("spaceKey"))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"size": 1,
+			"results": []map[string]any{
+				{"id": "77", "title": "Release Notes", "type": "blogpost"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListBlogPosts("TEAM", 20, 0)
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), result["size"])
 }
 
 func TestGetPageByTitleNotFound(t *testing.T) {
@@ -207,6 +326,20 @@ func TestSetPageLabel(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestDeletePageLabel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/content/12345/label", r.URL.Path)
+		assert.Equal(t, "archived", r.URL.Query().Get("name"))
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	err := c.DeletePageLabel("12345", "archived")
+	require.NoError(t, err)
+}
+
 func TestGetPageLabels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/rest/api/content/12345/label", r.URL.Path)
@@ -222,6 +355,97 @@ func TestGetPageLabels(t *testing.T) {
 	result, err := c.GetPageLabels("12345", 25, 0)
 	require.NoError(t, err)
 	assert.NotNil(t, result["results"])
+}
+
+func TestGetPageHistory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/content/12345/history", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"createdDate": "2024-01-01T00:00:00.000+0000",
+			"lastUpdated": map[string]any{
+				"when": "2024-01-02T00:00:00.000+0000",
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetPageHistory("12345")
+	require.NoError(t, err)
+	assert.Equal(t, "2024-01-01T00:00:00.000+0000", result["createdDate"])
+}
+
+func TestUpdateRestrictions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PUT", r.Method)
+		assert.Equal(t, "/rest/api/content/12345/restriction", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"updated": true})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.UpdateRestrictions("12345", []map[string]any{
+		{"operation": "read", "restrictions": map[string]any{"user": []map[string]any{}, "group": []map[string]any{}}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, true, result["updated"])
+}
+
+func TestListAttachments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/content/12345/child/attachment", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"size": 1,
+			"results": []map[string]any{
+				{"id": "9", "title": "spec.pdf"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListAttachments("12345", 20, 0)
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), result["size"])
+}
+
+func TestUploadAttachment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/content/12345/child/attachment", r.URL.Path)
+		assert.Equal(t, "nocheck", r.Header.Get("X-Atlassian-Token"))
+		assert.Contains(t, r.Header.Get("Content-Type"), "multipart/form-data")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "9", "title": "spec.pdf"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spec.pdf")
+	require.NoError(t, os.WriteFile(path, []byte("hello"), 0o644))
+
+	c := testClient(t, server)
+	result, err := c.UploadAttachment("12345", path)
+	require.NoError(t, err)
+	assert.NotNil(t, result["results"])
+}
+
+func TestDownloadAttachment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/download/attachments/12345/spec.pdf", r.URL.Path)
+		_, _ = io.WriteString(w, "hello")
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	outPath := filepath.Join(t.TempDir(), "spec.pdf")
+	require.NoError(t, c.DownloadAttachment("/download/attachments/12345/spec.pdf", outPath))
+	data, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(data))
 }
 
 func TestListPageComments(t *testing.T) {

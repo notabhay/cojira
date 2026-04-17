@@ -164,16 +164,18 @@ func runListWorklogs(cmd *cobra.Command, client *Client, issueID string, all boo
 		return nil
 	}
 	fmt.Printf("Worklogs for %s:\n\n", issueID)
+	rows := make([][]string, 0, len(items))
 	for _, item := range items {
 		author, _ := item["author"].(map[string]any)
-		fmt.Printf("[%v] %s | %v | %v\n%s\n\n",
-			item["id"],
-			formatUserDisplay(author),
-			item["started"],
-			item["timeSpent"],
-			normalizeMaybeString(item["comment"]),
-		)
+		rows = append(rows, []string{
+			normalizeMaybeString(item["id"]),
+			output.Truncate(formatUserDisplay(author), 24),
+			formatHumanTimestamp(normalizeMaybeString(item["started"])),
+			normalizeMaybeString(item["timeSpent"]),
+			output.Truncate(compactWhitespace(normalizeMaybeString(item["comment"])), 56),
+		})
 	}
+	fmt.Println(output.TableString([]string{"ID", "AUTHOR", "STARTED", "SPENT", "COMMENT"}, rows))
 	return nil
 }
 

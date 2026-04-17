@@ -86,9 +86,9 @@ func runFind(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	pages, _ := data["results"].([]any)
+	pages := extractCQLResults(data)
 	if fetchAll {
-		collected := make([]any, 0, len(pages))
+		collected := make([]map[string]any, 0, len(pages))
 		collected = append(collected, pages...)
 		nextStart := start + len(pages)
 		for len(pages) > 0 {
@@ -110,7 +110,7 @@ func runFind(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return err
 			}
-			pageResults, _ := page["results"].([]any)
+			pageResults := extractCQLResults(page)
 			if len(pageResults) == 0 {
 				break
 			}
@@ -141,19 +141,12 @@ func runFind(cmd *cobra.Command, args []string) error {
 	if mode == "json" {
 		var results []any
 		for _, p := range pages {
-			pm, ok := p.(map[string]any)
-			if !ok {
-				continue
-			}
-			content, _ := pm["content"].(map[string]any)
-			if content == nil {
-				continue
-			}
+			page := normalizeCQLPage(p)
 			results = append(results, map[string]any{
-				"id":    content["id"],
-				"title": content["title"],
-				"space": getNestedString(content, "space", "key"),
-				"url":   pm["url"],
+				"id":    page["id"],
+				"title": page["title"],
+				"space": page["space"],
+				"url":   page["url"],
 			})
 		}
 		return output.PrintJSON(output.BuildEnvelope(
@@ -169,20 +162,57 @@ func runFind(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Found %d page(s):\n\n", len(pages))
+	rows := make([][]string, 0, len(pages))
 	for _, p := range pages {
-		pm, ok := p.(map[string]any)
-		if !ok {
-			continue
+		page := normalizeCQLPage(p)
+		space := normalizeMaybeString(page["space"])
+		if space == "" {
+			space = "?"
 		}
-		content, _ := pm["content"].(map[string]any)
-		if content == nil {
-			continue
+		rows = append(rows, []string{
+			normalizeMaybeString(page["id"]),
+			space,
+			output.Truncate(normalizeMaybeString(page["title"]), 72),
+		})
+	}
+	fmt.Println(output.TableString([]string{"ID", "SPACE", "TITLE"}, rows))
+	return nil
+}
+
+func extractCQLResults(data map[string]any) []map[string]any {
+	raw, _ := data["results"].([]any)
+	items := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if ok {
+			items = append(items, m)
 		}
-		spaceKey := getNestedString(content, "space", "key")
-		if spaceKey == "" {
-			spaceKey = "?"
+	}
+	return items
+}
+
+func normalizeCQLPage(item map[string]any) map[string]any {
+	content, _ := item["content"].(map[string]any)
+	if content == nil {
+		content = item
+	}
+	spaceKey := getNestedString(content, "space", "key")
+	if spaceKey == "" {
+		spaceKey = getNestedString(item, "space", "key")
+	}
+	return map[string]any{
+		"id":    normalizeMaybeString(firstNonNil(content["id"], item["id"])),
+		"title": normalizeMaybeString(firstNonNil(content["title"], item["title"])),
+		"space": spaceKey,
+		"url":   normalizeMaybeString(item["url"]),
+	}
+}
+
+func firstNonNil(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
 		}
-		fmt.Printf("  %12v  [%s]  %v\n", content["id"], spaceKey, content["title"])
 	}
 	return nil
 }

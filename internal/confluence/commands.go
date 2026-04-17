@@ -3,6 +3,7 @@ package confluence
 import (
 	"os"
 
+	"github.com/notabhay/cojira/internal/cli"
 	"github.com/spf13/cobra"
 )
 
@@ -27,11 +28,18 @@ Environment variables:
 	// Persistent flag: --base-url (applies to all subcommands).
 	defaultBaseURL := os.Getenv("CONFLUENCE_BASE_URL")
 	cmd.PersistentFlags().String("base-url", defaultBaseURL, "Confluence base URL (overrides CONFLUENCE_BASE_URL)")
+	cli.AddPersistentHTTPCacheFlags(cmd)
 
 	// Register all subcommands.
 	cmd.AddCommand(NewValidateCmd())
 	cmd.AddCommand(NewInfoCmd())
+	cmd.AddCommand(NewHistoryCmd())
+	cmd.AddCommand(NewDiffCmd())
+	cmd.AddCommand(NewRestoreCmd())
+	cmd.AddCommand(NewRestrictionsCmd())
+	cmd.AddCommand(NewBlogCmd())
 	cmd.AddCommand(NewGetCmd())
+	cmd.AddCommand(NewAttachmentCmd())
 	cmd.AddCommand(NewCommentCmd())
 	cmd.AddCommand(NewFindCmd())
 	cmd.AddCommand(NewSpacesCmd())

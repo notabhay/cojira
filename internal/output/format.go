@@ -49,7 +49,15 @@ func EmitProgress(mode string, quiet bool, index, total int, message string, sta
 	}
 	suffix := ""
 	if status != "" {
-		suffix = " " + status
+		label := status
+		if ShouldColorize() {
+			label = colorizeStatus(status)
+		}
+		suffix = " " + label
 	}
-	fmt.Fprintf(os.Stderr, "[%d/%d] %s%s\n", index, total, message, suffix)
+	percent := 0
+	if total > 0 {
+		percent = int(float64(index) * 100 / float64(total))
+	}
+	fmt.Fprintf(os.Stderr, "[%d/%d %3d%%] %s%s\n", index, total, percent, message, suffix)
 }

@@ -3,9 +3,12 @@ package jira
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -17,6 +20,7 @@ import (
 	"github.com/notabhay/cojira/internal/dotenv"
 	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/httpclient"
+	"github.com/notabhay/cojira/internal/logging"
 )
 
 const (
@@ -28,29 +32,38 @@ const (
 // ClientConfig holds the parameters for creating a new JiraClient.
 type ClientConfig struct {
 	BaseURL     string
+	APIBaseURL  string
 	APIVersion  string
 	Email       string
 	Token       string
 	AuthMode    string
 	VerifySSL   bool
 	UserAgent   string
+	Context     context.Context
 	Timeout     time.Duration
 	RetryConfig httpclient.RetryConfig
+	CacheConfig httpclient.CacheConfig
+	Logger      *slog.Logger
 	Debug       bool
 }
 
 // Client is a Jira REST API client.
 type Client struct {
-	baseURL     string
-	apiVersion  string
-	restBase    string
-	verifySSL   bool
-	timeout     time.Duration
-	retryConfig httpclient.RetryConfig
-	debug       bool
-	httpClient  *http.Client
-	headers     http.Header
-	auth        *basicAuth
+	baseURL      string
+	apiBaseURL   string
+	apiVersion   string
+	restBase     string
+	verifySSL    bool
+	timeout      time.Duration
+	ctx          context.Context
+	retryConfig  httpclient.RetryConfig
+	cacheConfig  httpclient.CacheConfig
+	cacheVaryKey string
+	logger       *slog.Logger
+	debug        bool
+	httpClient   *http.Client
+	headers      http.Header
+	auth         *basicAuth
 }
 
 type basicAuth struct {
@@ -89,7 +102,11 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 
 	baseURL := strings.TrimRight(cfg.BaseURL, "/")
-	restBase := fmt.Sprintf("%s/rest/api/%s", baseURL, cfg.APIVersion)
+	apiBaseURL := strings.TrimRight(cfg.APIBaseURL, "/")
+	if apiBaseURL == "" {
+		apiBaseURL = baseURL
+	}
+	restBase := fmt.Sprintf("%s/rest/api/%s", apiBaseURL, cfg.APIVersion)
 
 	headers := http.Header{
 		"Accept":       {"application/json"},
@@ -111,16 +128,21 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 
 	return &Client{
-		baseURL:     baseURL,
-		apiVersion:  cfg.APIVersion,
-		restBase:    restBase,
-		verifySSL:   cfg.VerifySSL,
-		timeout:     cfg.Timeout,
-		retryConfig: cfg.RetryConfig,
-		debug:       cfg.Debug,
-		httpClient:  buildHTTPClient(cfg.Timeout, cfg.VerifySSL),
-		headers:     headers,
-		auth:        auth,
+		baseURL:      baseURL,
+		apiBaseURL:   apiBaseURL,
+		apiVersion:   cfg.APIVersion,
+		restBase:     restBase,
+		verifySSL:    cfg.VerifySSL,
+		timeout:      cfg.Timeout,
+		ctx:          cfg.Context,
+		retryConfig:  cfg.RetryConfig,
+		cacheConfig:  cfg.CacheConfig,
+		cacheVaryKey: cacheVaryKey(headers.Get("Authorization"), effectiveEmail, cfg.Token, mode),
+		logger:       cfg.Logger,
+		debug:        cfg.Debug,
+		httpClient:   buildHTTPClient(cfg.Timeout, cfg.VerifySSL),
+		headers:      headers,
+		auth:         auth,
 	}, nil
 }
 
@@ -171,28 +193,59 @@ func (c *Client) formatError(resp *http.Response) string {
 }
 
 func (c *Client) onRetry(attempt int, delay time.Duration, statusCode int) {
-	if !c.debug {
+	if c.logger == nil {
 		return
 	}
-	status := fmt.Sprintf("%d", statusCode)
-	if statusCode == 0 {
-		status = "error"
+	c.logger.Debug("http.retry",
+		"attempt", attempt,
+		"max_retries", c.retryConfig.Retries,
+		"delay_ms", delay.Milliseconds(),
+		"status", statusCode,
+	)
+}
+
+func cacheVaryKey(parts ...string) string {
+	hash := sha256.New()
+	for _, part := range parts {
+		_, _ = hash.Write([]byte(part))
+		_, _ = hash.Write([]byte{0})
 	}
-	fmt.Fprintf(os.Stderr, "[debug] retry %d/%d after %.2fs (status=%s)\n",
-		attempt, c.retryConfig.Retries, delay.Seconds(), status)
+	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func mergeQuery(requestURL string, params url.Values) string {
+	if len(params) == 0 {
+		return requestURL
+	}
+	return requestURL + "?" + params.Encode()
 }
 
 func (c *Client) doRequest(method, requestURL string, body []byte, params url.Values) (*http.Response, error) {
-	if len(params) > 0 {
-		requestURL = requestURL + "?" + params.Encode()
-	}
+	return c.doRequestWithHeaders(method, mergeQuery(requestURL, params), body, nil)
+}
 
+func (c *Client) doRequestWithHeaders(method, requestURL string, body []byte, extraHeaders http.Header) (*http.Response, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
 	}
+	target := logging.SafeTarget(requestURL)
+	if c.logger != nil {
+		c.logger.Debug("http.request",
+			"method", method,
+			"target", target,
+			"has_body", body != nil,
+			"conditional", extraHeaders.Get("If-None-Match") != "" || extraHeaders.Get("If-Modified-Since") != "",
+		)
+	}
 
-	req, err := http.NewRequest(method, requestURL, bodyReader)
+	var req *http.Request
+	var err error
+	if c.ctx != nil {
+		req, err = http.NewRequestWithContext(c.ctx, method, requestURL, bodyReader)
+	} else {
+		req, err = http.NewRequest(method, requestURL, bodyReader)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -200,6 +253,12 @@ func (c *Client) doRequest(method, requestURL string, body []byte, params url.Va
 	for key, values := range c.headers {
 		for _, v := range values {
 			req.Header.Set(key, v)
+		}
+	}
+	for key, values := range extraHeaders {
+		req.Header.Del(key)
+		for _, v := range values {
+			req.Header.Add(key, v)
 		}
 	}
 
@@ -250,24 +309,39 @@ func (c *Client) RequestURL(method, requestURL string, body []byte, params url.V
 
 func (c *Client) requestWithURL(method, requestURL string, body []byte, params url.Values) (*http.Response, error) {
 	method = strings.ToUpper(method)
+	finalURL := mergeQuery(requestURL, params)
+	target := logging.SafeTarget(finalURL)
+	startedAt := time.Now()
 
 	cfg := c.retryConfig
 	if method != "GET" && method != "HEAD" {
 		cfg.RetryExceptions = false
 	}
 
-	requestFn := func() (*http.Response, error) {
-		return c.doRequest(method, requestURL, body, params)
+	requestFn := func(extraHeaders http.Header) (*http.Response, error) {
+		return c.doRequestWithHeaders(method, finalURL, body, extraHeaders)
 	}
 
-	resp, err := httpclient.RequestWithRetry(requestFn, cfg, c.onRetry)
+	resp, err := httpclient.RequestWithCache(method, finalURL, c.cacheVaryKey, c.cacheConfig, func(extraHeaders http.Header) (*http.Response, error) {
+		return httpclient.RequestWithRetry(func() (*http.Response, error) {
+			return requestFn(extraHeaders)
+		}, cfg, c.onRetry)
+	})
 	if err != nil {
+		if c.logger != nil {
+			c.logger.Debug("http.error",
+				"method", method,
+				"target", target,
+				"duration_ms", time.Since(startedAt).Milliseconds(),
+				"error", err.Error(),
+			)
+		}
 		// Classify the error.
 		if isTimeoutError(err) {
 			timeout := c.timeout.Seconds()
 			return nil, &cerrors.CojiraError{
 				Code:     cerrors.Timeout,
-				Message:  fmt.Sprintf("Request timed out: %s %s", method, path(requestURL)),
+				Message:  fmt.Sprintf("Request timed out: %s %s", method, path(finalURL)),
 				Hint:     cerrors.HintTimeout(&timeout),
 				ExitCode: 1,
 			}
@@ -277,6 +351,16 @@ func (c *Client) requestWithURL(method, requestURL string, body []byte, params u
 			Message:  fmt.Sprintf("Network error: %v", err),
 			ExitCode: 1,
 		}
+	}
+
+	if c.logger != nil {
+		c.logger.Debug("http.response",
+			"method", method,
+			"target", target,
+			"status", resp.StatusCode,
+			"duration_ms", time.Since(startedAt).Milliseconds(),
+			"cache", resp.Header.Get("X-Cojira-Cache"),
+		)
 	}
 
 	return c.handleResponse(resp, method, requestURL)
@@ -339,7 +423,7 @@ func (c *Client) Search(jql string, limit, startAt int, fields string, expand st
 
 // GetBoardIssues fetches issues from a Jira Agile board.
 func (c *Client) GetBoardIssues(boardID string, jql string, limit, startAt int, fields string) (map[string]any, error) {
-	boardURL := fmt.Sprintf("%s%s/board/%s/issue", c.baseURL, AgileBase, boardID)
+	boardURL := fmt.Sprintf("%s%s/board/%s/issue", c.apiBaseURL, AgileBase, boardID)
 	params := url.Values{}
 	params.Set("maxResults", fmt.Sprintf("%d", limit))
 	params.Set("startAt", fmt.Sprintf("%d", startAt))
@@ -357,8 +441,83 @@ func (c *Client) GetBoardIssues(boardID string, jql string, limit, startAt int, 
 	return decodeJSON(resp)
 }
 
+// GetBoardConfiguration fetches Jira Agile board configuration metadata.
+func (c *Client) GetBoardConfiguration(boardID string) (map[string]any, error) {
+	requestURL := fmt.Sprintf("%s%s/board/%s/configuration", c.apiBaseURL, AgileBase, boardID)
+	resp, err := c.RequestURL("GET", requestURL, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ListBoards lists Jira agile boards.
+func (c *Client) ListBoards(boardType, name, projectKey string, limit, startAt int) (map[string]any, error) {
+	requestURL := fmt.Sprintf("%s%s/board", c.apiBaseURL, AgileBase)
+	params := url.Values{}
+	params.Set("maxResults", fmt.Sprintf("%d", limit))
+	params.Set("startAt", fmt.Sprintf("%d", startAt))
+	if strings.TrimSpace(boardType) != "" {
+		params.Set("type", boardType)
+	}
+	if strings.TrimSpace(name) != "" {
+		params.Set("name", name)
+	}
+	if strings.TrimSpace(projectKey) != "" {
+		params.Set("projectKeyOrId", projectKey)
+	}
+	resp, err := c.RequestURL("GET", requestURL, nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ListDashboards lists Jira dashboards visible to the current user.
+func (c *Client) ListDashboards(limit, startAt int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("maxResults", fmt.Sprintf("%d", limit))
+	params.Set("startAt", fmt.Sprintf("%d", startAt))
+	resp, err := c.Request("GET", "/dashboard", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// GetDashboard fetches dashboard metadata by id.
+func (c *Client) GetDashboard(dashboardID string) (map[string]any, error) {
+	resp, err := c.Request("GET", "/dashboard/"+dashboardID, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ListDashboardGadgets lists gadgets configured on a dashboard.
+func (c *Client) ListDashboardGadgets(dashboardID string, limit, startAt int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("maxResults", fmt.Sprintf("%d", limit))
+	params.Set("startAt", fmt.Sprintf("%d", startAt))
+	resp, err := c.Request("GET", "/dashboard/"+dashboardID+"/gadget", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
 // UpdateIssue updates a Jira issue with the given payload.
 func (c *Client) UpdateIssue(issue string, payload map[string]any, notifyUsers bool) error {
+	if c.apiVersion == "3" {
+		if err := normalizeADFPayload(payload); err != nil {
+			return err
+		}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -401,6 +560,11 @@ func (c *Client) ListTransitions(issue string) (map[string]any, error) {
 
 // CreateIssue creates a new Jira issue.
 func (c *Client) CreateIssue(payload map[string]any) (map[string]any, error) {
+	if c.apiVersion == "3" {
+		if err := normalizeADFPayload(payload); err != nil {
+			return nil, err
+		}
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -427,8 +591,13 @@ func (c *Client) ListComments(issue string, limit, startAt int) (map[string]any,
 }
 
 // AddComment adds a comment to a Jira issue.
-func (c *Client) AddComment(issue string, bodyText string) (map[string]any, error) {
-	body, err := json.Marshal(map[string]any{"body": bodyText})
+func (c *Client) AddComment(issue string, bodyValue any) (map[string]any, error) {
+	if c.apiVersion == "3" {
+		if text, ok := bodyValue.(string); ok {
+			bodyValue = plainTextADFDocument(text)
+		}
+	}
+	body, err := json.Marshal(map[string]any{"body": bodyValue})
 	if err != nil {
 		return nil, err
 	}
@@ -438,6 +607,35 @@ func (c *Client) AddComment(issue string, bodyText string) (map[string]any, erro
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return decodeJSON(resp)
+}
+
+// UpdateComment updates an existing Jira comment.
+func (c *Client) UpdateComment(issue, commentID string, bodyValue any) (map[string]any, error) {
+	if c.apiVersion == "3" {
+		if text, ok := bodyValue.(string); ok {
+			bodyValue = plainTextADFDocument(text)
+		}
+	}
+	body, err := json.Marshal(map[string]any{"body": bodyValue})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.Request("PUT", "/issue/"+issue+"/comment/"+commentID, body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// DeleteComment removes a Jira comment from an issue.
+func (c *Client) DeleteComment(issue, commentID string) error {
+	resp, err := c.Request("DELETE", "/issue/"+issue+"/comment/"+commentID, nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
 }
 
 // CreateIssueLink creates a relationship between two Jira issues.
@@ -452,6 +650,31 @@ func (c *Client) CreateIssueLink(payload map[string]any) error {
 	}
 	_ = resp.Body.Close()
 	return nil
+}
+
+// DeleteIssueLink removes an issue link by id.
+func (c *Client) DeleteIssueLink(linkID string) error {
+	resp, err := c.Request("DELETE", "/issueLink/"+linkID, nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// ListIssueLinkTypes returns the configured Jira issue link types.
+func (c *Client) ListIssueLinkTypes() ([]map[string]any, error) {
+	resp, err := c.Request("GET", "/issueLinkType", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := decodeJSON(resp)
+	if err != nil {
+		return nil, err
+	}
+	raw, _ := data["issueLinkTypes"].([]any)
+	return coerceJSONArray(raw), nil
 }
 
 // AssignIssue updates the assignee on a Jira issue.
@@ -537,6 +760,54 @@ func (c *Client) ListFields() ([]map[string]any, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+// ListCreateMetaIssueTypes returns issue types available for creating issues in a project.
+func (c *Client) ListCreateMetaIssueTypes(projectKey string) ([]map[string]any, error) {
+	resp, err := c.Request("GET", "/issue/createmeta/"+url.PathEscape(projectKey)+"/issuetypes", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := decodeJSON(resp)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range []string{"values", "results", "issueTypes"} {
+		if arr, ok := data[key].([]any); ok {
+			return coerceJSONArray(arr), nil
+		}
+	}
+	return []map[string]any{}, nil
+}
+
+// GetCreateMetaIssueTypeFields returns create metadata fields for a project and issue type.
+func (c *Client) GetCreateMetaIssueTypeFields(projectKey, issueTypeID string) ([]map[string]any, error) {
+	resp, err := c.Request("GET", "/issue/createmeta/"+url.PathEscape(projectKey)+"/issuetypes/"+url.PathEscape(issueTypeID), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := decodeJSON(resp)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range []string{"values", "results", "fields"} {
+		if arr, ok := data[key].([]any); ok {
+			return coerceJSONArray(arr), nil
+		}
+	}
+	return []map[string]any{}, nil
+}
+
+// GetEditMeta returns edit metadata for an issue, including allowed values.
+func (c *Client) GetEditMeta(issue string) (map[string]any, error) {
+	resp, err := c.Request("GET", "/issue/"+issue+"/editmeta", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
 }
 
 // GetMyself returns the currently authenticated user.
@@ -655,7 +926,7 @@ func (c *Client) DeleteIssue(issue string, deleteSubtasks bool) error {
 
 // ListBoardSprints lists sprints on a board.
 func (c *Client) ListBoardSprints(boardID, state string, limit, startAt int) (map[string]any, error) {
-	requestURL := fmt.Sprintf("%s%s/board/%s/sprint", c.baseURL, AgileBase, boardID)
+	requestURL := fmt.Sprintf("%s%s/board/%s/sprint", c.apiBaseURL, AgileBase, boardID)
 	params := url.Values{}
 	params.Set("maxResults", fmt.Sprintf("%d", limit))
 	params.Set("startAt", fmt.Sprintf("%d", startAt))
@@ -672,7 +943,7 @@ func (c *Client) ListBoardSprints(boardID, state string, limit, startAt int) (ma
 
 // GetSprint fetches sprint metadata by ID.
 func (c *Client) GetSprint(sprintID string) (map[string]any, error) {
-	requestURL := fmt.Sprintf("%s%s/sprint/%s", c.baseURL, AgileBase, sprintID)
+	requestURL := fmt.Sprintf("%s%s/sprint/%s", c.apiBaseURL, AgileBase, sprintID)
 	resp, err := c.RequestURL("GET", requestURL, nil, nil)
 	if err != nil {
 		return nil, err
@@ -683,7 +954,7 @@ func (c *Client) GetSprint(sprintID string) (map[string]any, error) {
 
 // CreateSprint creates a sprint.
 func (c *Client) CreateSprint(payload map[string]any) (map[string]any, error) {
-	requestURL := fmt.Sprintf("%s%s/sprint", c.baseURL, AgileBase)
+	requestURL := fmt.Sprintf("%s%s/sprint", c.apiBaseURL, AgileBase)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -698,7 +969,7 @@ func (c *Client) CreateSprint(payload map[string]any) (map[string]any, error) {
 
 // UpdateSprint updates an existing sprint.
 func (c *Client) UpdateSprint(sprintID string, payload map[string]any) (map[string]any, error) {
-	requestURL := fmt.Sprintf("%s%s/sprint/%s", c.baseURL, AgileBase, sprintID)
+	requestURL := fmt.Sprintf("%s%s/sprint/%s", c.apiBaseURL, AgileBase, sprintID)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -713,7 +984,7 @@ func (c *Client) UpdateSprint(sprintID string, payload map[string]any) (map[stri
 
 // DeleteSprint deletes a sprint.
 func (c *Client) DeleteSprint(sprintID string) error {
-	requestURL := fmt.Sprintf("%s%s/sprint/%s", c.baseURL, AgileBase, sprintID)
+	requestURL := fmt.Sprintf("%s%s/sprint/%s", c.apiBaseURL, AgileBase, sprintID)
 	resp, err := c.RequestURL("DELETE", requestURL, nil, nil)
 	if err != nil {
 		return err
@@ -724,7 +995,7 @@ func (c *Client) DeleteSprint(sprintID string) error {
 
 // AddIssuesToSprint assigns issues to a sprint.
 func (c *Client) AddIssuesToSprint(sprintID string, issues []string) error {
-	requestURL := fmt.Sprintf("%s%s/sprint/%s/issue", c.baseURL, AgileBase, sprintID)
+	requestURL := fmt.Sprintf("%s%s/sprint/%s/issue", c.apiBaseURL, AgileBase, sprintID)
 	body, err := json.Marshal(map[string]any{"issues": issues})
 	if err != nil {
 		return err
@@ -746,6 +1017,16 @@ func (c *Client) ListAttachments(issue string) ([]map[string]any, error) {
 	fields, _ := data["fields"].(map[string]any)
 	arr, _ := fields["attachment"].([]any)
 	return coerceJSONArray(arr), nil
+}
+
+// DeleteAttachment removes an attachment by id.
+func (c *Client) DeleteAttachment(attachmentID string) error {
+	resp, err := c.Request("DELETE", "/attachment/"+attachmentID, nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
 }
 
 // UploadAttachment uploads a file attachment to a Jira issue.
@@ -853,6 +1134,9 @@ func coerceJSONArray(items []any) []map[string]any {
 
 func (c *Client) requestWithExtraHeaders(method, requestURL string, body []byte, params url.Values, extraHeaders http.Header) (*http.Response, error) {
 	method = strings.ToUpper(method)
+	finalURL := mergeQuery(requestURL, params)
+	target := logging.SafeTarget(finalURL)
+	startedAt := time.Now()
 
 	cfg := c.retryConfig
 	if method != "GET" && method != "HEAD" {
@@ -860,47 +1144,24 @@ func (c *Client) requestWithExtraHeaders(method, requestURL string, body []byte,
 	}
 
 	requestFn := func() (*http.Response, error) {
-		finalURL := requestURL
-		if len(params) > 0 {
-			finalURL = finalURL + "?" + params.Encode()
-		}
-
-		var bodyReader io.Reader
-		if body != nil {
-			bodyReader = bytes.NewReader(body)
-		}
-
-		req, err := http.NewRequest(method, finalURL, bodyReader)
-		if err != nil {
-			return nil, err
-		}
-
-		for key, values := range c.headers {
-			for _, v := range values {
-				req.Header.Set(key, v)
-			}
-		}
-		for key, values := range extraHeaders {
-			req.Header.Del(key)
-			for _, v := range values {
-				req.Header.Add(key, v)
-			}
-		}
-
-		if c.auth != nil {
-			req.SetBasicAuth(c.auth.username, c.auth.password)
-		}
-
-		return c.httpClient.Do(req)
+		return c.doRequestWithHeaders(method, finalURL, body, extraHeaders)
 	}
 
 	resp, err := httpclient.RequestWithRetry(requestFn, cfg, c.onRetry)
 	if err != nil {
+		if c.logger != nil {
+			c.logger.Debug("http.error",
+				"method", method,
+				"target", target,
+				"duration_ms", time.Since(startedAt).Milliseconds(),
+				"error", err.Error(),
+			)
+		}
 		if isTimeoutError(err) {
 			timeout := c.timeout.Seconds()
 			return nil, &cerrors.CojiraError{
 				Code:     cerrors.Timeout,
-				Message:  fmt.Sprintf("Request timed out: %s %s", method, path(requestURL)),
+				Message:  fmt.Sprintf("Request timed out: %s %s", method, path(finalURL)),
 				Hint:     cerrors.HintTimeout(&timeout),
 				ExitCode: 1,
 			}
@@ -912,5 +1173,15 @@ func (c *Client) requestWithExtraHeaders(method, requestURL string, body []byte,
 		}
 	}
 
-	return c.handleResponse(resp, method, requestURL)
+	if c.logger != nil {
+		c.logger.Debug("http.response",
+			"method", method,
+			"target", target,
+			"status", resp.StatusCode,
+			"duration_ms", time.Since(startedAt).Milliseconds(),
+			"cache", resp.Header.Get("X-Cojira-Cache"),
+		)
+	}
+
+	return c.handleResponse(resp, method, finalURL)
 }

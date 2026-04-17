@@ -3,10 +3,13 @@
 package cli
 
 import (
+	"context"
 	"os"
+	"time"
 
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // AddOutputFlags registers --output-mode (and optionally --quiet) on cmd.
@@ -16,6 +19,11 @@ func AddOutputFlags(cmd *cobra.Command, includeQuiet bool) {
 		defaultMode = "human"
 	}
 	cmd.Flags().String("output-mode", defaultMode, "Output mode: human, json, summary, auto (default: human)")
+	defaultColor := os.Getenv("COJIRA_COLOR")
+	if defaultColor == "" {
+		defaultColor = "auto"
+	}
+	cmd.Flags().String("color", defaultColor, "Color mode: auto, always, never (default: auto)")
 	if includeQuiet {
 		cmd.Flags().Bool("quiet", false, "Suppress receipts/progress output (best-effort)")
 	}
@@ -24,11 +32,35 @@ func AddOutputFlags(cmd *cobra.Command, includeQuiet bool) {
 // AddHTTPRetryFlags registers --timeout, --retries, --retry-base-delay,
 // --retry-max-delay, and --debug on cmd.
 func AddHTTPRetryFlags(cmd *cobra.Command) {
-	cmd.Flags().Float64("timeout", 30.0, "HTTP timeout in seconds (default: 30)")
-	cmd.Flags().Int("retries", 5, "HTTP retries for 429/5xx (default: 5)")
-	cmd.Flags().Float64("retry-base-delay", 0.5, "Base delay for exponential backoff in seconds (default: 0.5)")
-	cmd.Flags().Float64("retry-max-delay", 8.0, "Max delay between retries in seconds (default: 8.0)")
-	cmd.Flags().Bool("debug", false, "Enable debug logging to stderr")
+	addHTTPRetryFlags(cmd.Flags())
+}
+
+// AddPersistentHTTPRetryFlags registers retry flags as inherited flags.
+func AddPersistentHTTPRetryFlags(cmd *cobra.Command) {
+	addHTTPRetryFlags(cmd.PersistentFlags())
+}
+
+// AddHTTPCacheFlags registers --no-cache and --cache-ttl on cmd.
+func AddHTTPCacheFlags(cmd *cobra.Command) {
+	addHTTPCacheFlags(cmd.Flags())
+}
+
+// AddPersistentHTTPCacheFlags registers cache flags as inherited flags.
+func AddPersistentHTTPCacheFlags(cmd *cobra.Command) {
+	addHTTPCacheFlags(cmd.PersistentFlags())
+}
+
+func addHTTPRetryFlags(flags *pflag.FlagSet) {
+	flags.Float64("timeout", 30.0, "HTTP timeout in seconds (default: 30)")
+	flags.Int("retries", 5, "HTTP retries for 429/5xx (default: 5)")
+	flags.Float64("retry-base-delay", 0.5, "Base delay for exponential backoff in seconds (default: 0.5)")
+	flags.Float64("retry-max-delay", 8.0, "Max delay between retries in seconds (default: 8.0)")
+	flags.Bool("debug", false, "Enable debug logging to stderr")
+}
+
+func addHTTPCacheFlags(flags *pflag.FlagSet) {
+	flags.Bool("no-cache", false, "Disable the shared HTTP cache for GET/HEAD requests")
+	flags.Duration("cache-ttl", 5*time.Minute, "TTL for cached GET/HEAD responses (default: 5m)")
 }
 
 // AddIdempotencyFlags registers --idempotency-key on cmd.
@@ -52,6 +84,13 @@ func NormalizeOutputMode(cmd *cobra.Command) string {
 		mode = "human"
 	}
 	output.SetMode(mode)
+	colorMode, _ := cmd.Flags().GetString("color")
+	switch colorMode {
+	case "always", "never", "auto":
+		output.SetColorMode(colorMode)
+	default:
+		output.SetColorMode("auto")
+	}
 	return mode
 }
 
@@ -85,11 +124,14 @@ func ApplyPlanFlag(cmd *cobra.Command) {
 // This is a local definition; the httpclient package may define its own
 // once it's ported and this can be unified.
 type RetryConfig struct {
+	Context        context.Context
 	Timeout        float64
 	Retries        int
 	RetryBaseDelay float64
 	RetryMaxDelay  float64
 	Debug          bool
+	NoCache        bool
+	CacheTTL       time.Duration
 }
 
 // BuildRetryConfig reads retry-related flags from cmd and returns a RetryConfig.
@@ -99,11 +141,16 @@ func BuildRetryConfig(cmd *cobra.Command) RetryConfig {
 	baseDelay, _ := cmd.Flags().GetFloat64("retry-base-delay")
 	maxDelay, _ := cmd.Flags().GetFloat64("retry-max-delay")
 	debug, _ := cmd.Flags().GetBool("debug")
+	noCache, _ := cmd.Flags().GetBool("no-cache")
+	cacheTTL, _ := cmd.Flags().GetDuration("cache-ttl")
 	return RetryConfig{
+		Context:        cmd.Context(),
 		Timeout:        timeout,
 		Retries:        retries,
 		RetryBaseDelay: baseDelay,
 		RetryMaxDelay:  maxDelay,
 		Debug:          debug,
+		NoCache:        noCache,
+		CacheTTL:       cacheTTL,
 	}
 }

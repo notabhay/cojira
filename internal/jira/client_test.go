@@ -34,6 +34,7 @@ func testClient(t *testing.T, server *httptest.Server) *Client {
 		UserAgent:   "test/0.1",
 		Timeout:     5 * time.Second,
 		RetryConfig: noRetryConfig(),
+		CacheConfig: httpclient.CacheConfig{Disabled: true},
 	})
 	require.NoError(t, err)
 	return c
@@ -198,6 +199,40 @@ func TestGetIssue(t *testing.T) {
 	assert.Equal(t, "PROJ-123", issue["key"])
 }
 
+func TestGetIssueUsesHTTPCache(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123", r.URL.Path)
+		w.Header().Set("ETag", `"issue-123"`)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"key":    "PROJ-123",
+			"fields": map[string]any{"summary": "Cached issue"},
+		})
+	}))
+	defer server.Close()
+
+	c, err := NewClient(ClientConfig{
+		BaseURL:     server.URL,
+		Token:       "fake-token",
+		APIVersion:  "2",
+		UserAgent:   "test/0.1",
+		Timeout:     5 * time.Second,
+		RetryConfig: noRetryConfig(),
+		CacheConfig: httpclient.CacheConfig{TTL: time.Hour, Dir: t.TempDir()},
+	})
+	require.NoError(t, err)
+
+	first, err := c.GetIssue("PROJ-123", "summary", "")
+	require.NoError(t, err)
+	second, err := c.GetIssue("PROJ-123", "summary", "")
+	require.NoError(t, err)
+
+	assert.Equal(t, "PROJ-123", first["key"])
+	assert.Equal(t, "PROJ-123", second["key"])
+	assert.Equal(t, 1, callCount)
+}
+
 func TestSearch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/rest/api/2/search", r.URL.Path)
@@ -211,6 +246,62 @@ func TestSearch(t *testing.T) {
 
 	c := testClient(t, server)
 	result, err := c.Search("project = PROJ", 50, 0, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), result["total"])
+}
+
+func TestListDashboards(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/dashboard", r.URL.Path)
+		assert.Equal(t, "25", r.URL.Query().Get("maxResults"))
+		assert.Equal(t, "10", r.URL.Query().Get("startAt"))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total": 1,
+			"dashboards": []map[string]any{
+				{"id": "10000", "name": "Exec Dashboard"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListDashboards(25, 10)
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), result["total"])
+}
+
+func TestGetDashboard(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/dashboard/10000", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":   "10000",
+			"name": "Exec Dashboard",
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetDashboard("10000")
+	require.NoError(t, err)
+	assert.Equal(t, "Exec Dashboard", result["name"])
+}
+
+func TestListDashboardGadgets(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/dashboard/10000/gadget", r.URL.Path)
+		assert.Equal(t, "50", r.URL.Query().Get("maxResults"))
+		assert.Equal(t, "0", r.URL.Query().Get("startAt"))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total": 1,
+			"gadgets": []map[string]any{
+				{"id": "20000", "title": "Filter Results"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListDashboardGadgets("10000", 50, 0)
 	require.NoError(t, err)
 	assert.Equal(t, float64(1), result["total"])
 }
@@ -330,6 +421,93 @@ func TestAddComment(t *testing.T) {
 	assert.Equal(t, "10", result["id"])
 }
 
+func TestAddCommentV3ConvertsPlainTextToADF(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/3/issue/PROJ-123/comment", r.URL.Path)
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		body := payload["body"].(map[string]any)
+		assert.Equal(t, "doc", body["type"])
+		w.WriteHeader(201)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "10"})
+	}))
+	defer server.Close()
+
+	c, err := NewClient(ClientConfig{
+		BaseURL:     server.URL,
+		Token:       "fake-token",
+		APIVersion:  "3",
+		UserAgent:   "test/0.1",
+		Timeout:     5 * time.Second,
+		RetryConfig: noRetryConfig(),
+		CacheConfig: httpclient.CacheConfig{Disabled: true},
+	})
+	require.NoError(t, err)
+
+	result, err := c.AddComment("PROJ-123", "hello")
+	require.NoError(t, err)
+	assert.Equal(t, "10", result["id"])
+}
+
+func TestGetBoardIssuesUsesAPIBaseURL(t *testing.T) {
+	var directServerCalled bool
+	directServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directServerCalled = true
+		w.WriteHeader(500)
+	}))
+	defer directServer.Close()
+
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/agile/1.0/board/42/issue", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"issues": []map[string]any{}})
+	}))
+	defer apiServer.Close()
+
+	c, err := NewClient(ClientConfig{
+		BaseURL:     directServer.URL,
+		APIBaseURL:  apiServer.URL,
+		Token:       "fake-token",
+		APIVersion:  "2",
+		UserAgent:   "test/0.1",
+		Timeout:     5 * time.Second,
+		RetryConfig: noRetryConfig(),
+		CacheConfig: httpclient.CacheConfig{Disabled: true},
+	})
+	require.NoError(t, err)
+
+	_, err = c.GetBoardIssues("42", "", 10, 0, "")
+	require.NoError(t, err)
+	assert.False(t, directServerCalled)
+}
+
+func TestUpdateComment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PUT", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/comment/10", r.URL.Path)
+		w.WriteHeader(200)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "10", "body": "updated"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.UpdateComment("PROJ-123", "10", "updated")
+	require.NoError(t, err)
+	assert.Equal(t, "updated", result["body"])
+}
+
+func TestDeleteComment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/comment/10", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeleteComment("PROJ-123", "10"))
+}
+
 func TestCreateIssueLink(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
@@ -341,6 +519,37 @@ func TestCreateIssueLink(t *testing.T) {
 	c := testClient(t, server)
 	err := c.CreateIssueLink(map[string]any{"type": map[string]any{"name": "Relates"}})
 	require.NoError(t, err)
+}
+
+func TestDeleteIssueLink(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/2/issueLink/77", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeleteIssueLink("77"))
+}
+
+func TestListIssueLinkTypes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/rest/api/2/issueLinkType", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issueLinkTypes": []map[string]any{
+				{"id": "1", "name": "Relates", "outward": "relates to", "inward": "relates to"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	items, err := c.ListIssueLinkTypes()
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "Relates", items[0]["name"])
 }
 
 func TestAssignIssue(t *testing.T) {
@@ -386,6 +595,44 @@ func TestListProjects(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, projects, 1)
 	assert.Equal(t, "RAPTOR", projects[0]["key"])
+}
+
+func TestListCreateMetaIssueTypes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/issue/createmeta/RAPTOR/issuetypes", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"values": []map[string]any{
+				{"id": "3", "name": "Task"},
+				{"id": "1", "name": "Bug"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	items, err := c.ListCreateMetaIssueTypes("RAPTOR")
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	assert.Equal(t, "Task", items[0]["name"])
+}
+
+func TestGetCreateMetaIssueTypeFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/issue/createmeta/RAPTOR/issuetypes/3", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"values": []map[string]any{
+				{"fieldId": "priority", "name": "Priority"},
+				{"fieldId": "summary", "name": "Summary"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	items, err := c.GetCreateMetaIssueTypeFields("RAPTOR", "3")
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+	assert.Equal(t, "priority", items[0]["fieldId"])
 }
 
 func TestGetWatchers(t *testing.T) {
@@ -606,6 +853,18 @@ func TestUploadAttachment(t *testing.T) {
 	assert.Equal(t, "55", result["id"])
 }
 
+func TestDeleteAttachment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/2/attachment/55", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeleteAttachment("55"))
+}
+
 func TestDownloadAttachment(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/files/sample.txt", r.URL.Path)
@@ -636,6 +895,49 @@ func TestGetBoardIssues(t *testing.T) {
 	result, err := c.GetBoardIssues("45434", "", 50, 0, "")
 	require.NoError(t, err)
 	assert.Equal(t, float64(2), result["total"])
+}
+
+func TestListBoards(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/agile/1.0/board", r.URL.Path)
+		assert.Equal(t, "scrum", r.URL.Query().Get("type"))
+		assert.Equal(t, "RAPTOR", r.URL.Query().Get("projectKeyOrId"))
+		assert.Equal(t, "Delivery", r.URL.Query().Get("name"))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"values": []map[string]any{
+				{"id": 45434, "name": "Delivery Board", "type": "scrum"},
+			},
+			"total": 1,
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListBoards("scrum", "Delivery", "RAPTOR", 20, 0)
+	require.NoError(t, err)
+	assert.NotNil(t, result["values"])
+	assert.Equal(t, float64(1), result["total"])
+}
+
+func TestGetBoardConfiguration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/agile/1.0/board/45434/configuration", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":   45434,
+			"name": "Delivery Board",
+			"columnConfig": map[string]any{
+				"columns": []map[string]any{
+					{"name": "To Do"},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetBoardConfiguration("45434")
+	require.NoError(t, err)
+	assert.Equal(t, "Delivery Board", result["name"])
 }
 
 func TestBaseURLTrailingSlashStripped(t *testing.T) {

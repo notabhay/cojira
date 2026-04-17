@@ -16,12 +16,13 @@ import (
 func NewAttachmentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "attachment <issue>",
-		Short: "List, upload, or download Jira attachments",
+		Short: "List, upload, download, or delete Jira attachments",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runAttachment,
 	}
 	cmd.Flags().StringArray("upload", nil, "File to upload (repeatable)")
 	cmd.Flags().String("download", "", "Attachment ID to download")
+	cmd.Flags().String("delete", "", "Attachment ID to delete")
 	cmd.Flags().String("output", "", "Output path for --download")
 	cmd.Flags().Bool("dry-run", false, "Preview the upload without applying")
 	cmd.Flags().Bool("plan", false, "Alias for --dry-run")
@@ -42,14 +43,25 @@ func runAttachment(cmd *cobra.Command, args []string) error {
 	issueID := ResolveIssueIdentifier(args[0])
 	uploads, _ := cmd.Flags().GetStringArray("upload")
 	downloadID, _ := cmd.Flags().GetString("download")
+	deleteID, _ := cmd.Flags().GetString("delete")
 	outputPath, _ := cmd.Flags().GetString("output")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	idemKey, _ := cmd.Flags().GetString("idempotency-key")
 
-	if len(uploads) > 0 && downloadID != "" {
+	actions := 0
+	if len(uploads) > 0 {
+		actions++
+	}
+	if downloadID != "" {
+		actions++
+	}
+	if deleteID != "" {
+		actions++
+	}
+	if actions > 1 {
 		return &cerrors.CojiraError{
 			Code:     cerrors.OpFailed,
-			Message:  "Use either --upload or --download, not both.",
+			Message:  "Use only one of --upload, --download, or --delete.",
 			ExitCode: 2,
 		}
 	}
@@ -59,6 +71,9 @@ func runAttachment(cmd *cobra.Command, args []string) error {
 	}
 	if downloadID != "" {
 		return runAttachmentDownload(cmd, client, issueID, downloadID, outputPath, mode)
+	}
+	if deleteID != "" {
+		return runAttachmentDelete(cmd, client, issueID, deleteID, dryRun, idemKey, mode)
 	}
 	return runAttachmentList(cmd, client, issueID, mode)
 }
@@ -87,10 +102,18 @@ func runAttachmentList(cmd *cobra.Command, client *Client, issueID, mode string)
 	}
 
 	fmt.Printf("Attachments for %s:\n\n", issueID)
+	rows := make([][]string, 0, len(attachments))
 	for _, attachment := range attachments {
 		author, _ := attachment["author"].(map[string]any)
-		fmt.Printf("  %-12v %-32v %v\n", attachment["id"], attachment["filename"], author["displayName"])
+		rows = append(rows, []string{
+			normalizeMaybeString(attachment["id"]),
+			output.Truncate(normalizeMaybeString(attachment["filename"]), 40),
+			output.Truncate(formatUserDisplay(author), 24),
+			formatHumanBytes(attachment["size"]),
+			formatHumanTimestamp(normalizeMaybeString(attachment["created"])),
+		})
 	}
+	fmt.Println(output.TableString([]string{"ID", "FILE", "AUTHOR", "SIZE", "CREATED"}, rows))
 	return nil
 }
 
@@ -208,5 +231,67 @@ func runAttachmentDownload(cmd *cobra.Command, client *Client, issueID, download
 		return nil
 	}
 	fmt.Printf("Downloaded attachment %s to %s.\n", downloadID, outputPath)
+	return nil
+}
+
+func runAttachmentDelete(cmd *cobra.Command, client *Client, issueID, deleteID string, dryRun bool, idemKey, mode string) error {
+	attachments, err := client.ListAttachments(issueID)
+	if err != nil {
+		return err
+	}
+
+	var selected map[string]any
+	for _, attachment := range attachments {
+		if fmt.Sprintf("%v", attachment["id"]) == deleteID {
+			selected = attachment
+			break
+		}
+	}
+	if selected == nil {
+		return &cerrors.CojiraError{
+			Code:     cerrors.IdentUnresolved,
+			Message:  fmt.Sprintf("Attachment %s was not found on %s.", deleteID, issueID),
+			ExitCode: 1,
+		}
+	}
+
+	target := map[string]any{"issue": issueID, "attachment_id": deleteID}
+
+	if dryRun {
+		if mode == "json" {
+			return output.PrintJSON(output.BuildEnvelope(true, "jira", "attachment", target, map[string]any{"dry_run": true, "deleted": false, "filename": selected["filename"]}, nil, nil, "", "", "", nil))
+		}
+		if mode == "summary" {
+			fmt.Printf("Would delete attachment %s from %s.\n", deleteID, issueID)
+			return nil
+		}
+		fmt.Printf("Would delete attachment %s from %s.\n", deleteID, issueID)
+		return nil
+	}
+
+	if idemKey != "" && idempotency.IsDuplicate(idemKey) {
+		if mode == "json" {
+			return output.PrintJSON(output.BuildEnvelope(true, "jira", "attachment", target, map[string]any{"skipped": true, "reason": "idempotency_key_already_used"}, nil, nil, "", "", "", nil))
+		}
+		fmt.Printf("Skipped duplicate attachment delete for %s.\n", issueID)
+		return nil
+	}
+
+	if err := client.DeleteAttachment(deleteID); err != nil {
+		return err
+	}
+
+	if idemKey != "" {
+		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.attachment delete %s %s", issueID, deleteID))
+	}
+
+	if mode == "json" {
+		return output.PrintJSON(output.BuildEnvelope(true, "jira", "attachment", target, map[string]any{"deleted": true, "filename": selected["filename"]}, nil, nil, "", "", "", nil))
+	}
+	if mode == "summary" {
+		fmt.Printf("Deleted attachment %s from %s.\n", deleteID, issueID)
+		return nil
+	}
+	fmt.Printf("Deleted attachment %s from %s.\n", deleteID, issueID)
 	return nil
 }

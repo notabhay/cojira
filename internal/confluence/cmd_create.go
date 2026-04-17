@@ -23,6 +23,7 @@ func NewCreateCmd() *cobra.Command {
 	cmd.Flags().StringP("space", "s", "", "Space key (or set confluence.default_space)")
 	cmd.Flags().StringP("parent", "p", "", "Parent page identifier")
 	cmd.Flags().StringP("file", "f", "", "Content file (storage-format XHTML)")
+	cmd.Flags().String("format", "storage", "Body format: storage or markdown")
 	cmd.Flags().Bool("plan", false, "Preview create without applying")
 	cli.AddOutputFlags(cmd, true)
 	cli.AddHTTPRetryFlags(cmd)
@@ -45,6 +46,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	parentArg, _ := cmd.Flags().GetString("parent")
 	filePath, _ := cmd.Flags().GetString("file")
+	format, _ := cmd.Flags().GetString("format")
 	planMode, _ := cmd.Flags().GetBool("plan")
 	idemKey, _ := cmd.Flags().GetString("idempotency-key")
 
@@ -91,6 +93,10 @@ func runCreate(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "Error: File not found: %s\n", filePath)
 			return err
 		}
+	}
+	body, err = convertStorageBody(body, format)
+	if err != nil {
+		return err
 	}
 
 	// Resolve parent if provided.

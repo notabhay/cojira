@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -193,4 +194,72 @@ func TestLoadProjectConfigMergesAncestorConfigs(t *testing.T) {
 	assert.Equal(t, "project = CHILD", loaded.GetValue([]string{"jira", "default_jql_scope"}, nil))
 	assert.Equal(t, "jira whoami", loaded.GetAlias("base"))
 	assert.Equal(t, "jira info PROJ-1", loaded.GetAlias("local"))
+}
+
+func TestGetStringMapAndObject(t *testing.T) {
+	cfg := &ProjectConfig{
+		Data: map[string]any{
+			"jira": map[string]any{
+				"saved_queries": map[string]any{
+					"mine": "assignee = currentUser()",
+					"bad":  42,
+				},
+				"templates": map[string]any{
+					"bug": map[string]any{"summary_prefix": "[Bug]"},
+				},
+			},
+		},
+	}
+
+	assert.Equal(t, map[string]string{"mine": "assignee = currentUser()"}, cfg.GetStringMap([]string{"jira", "saved_queries"}))
+	assert.Equal(t, map[string]any{"summary_prefix": "[Bug]"}, cfg.GetObject([]string{"jira", "templates", "bug"}))
+	assert.Equal(t, map[string]any{}, cfg.GetObject([]string{"jira", "templates", "missing"}))
+}
+
+func TestLoadWritableProjectConfigCreatesInCwdWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	defer func() { _ = os.Chdir(origDir) }()
+
+	cfg, err := LoadWritableProjectConfig()
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, ConfigFilename, filepath.Base(cfg.Path))
+	assert.True(t, strings.HasSuffix(cfg.Path, filepath.Join(filepath.Base(dir), ConfigFilename)))
+	assert.Equal(t, map[string]any{}, cfg.Data)
+}
+
+func TestNearestConfigPathPrefersClosestAncestor(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "a", "b")
+	require.NoError(t, os.MkdirAll(child, 0o755))
+	rootCfg := filepath.Join(root, ConfigFilename)
+	childCfg := filepath.Join(root, "a", ConfigFilename)
+	require.NoError(t, os.WriteFile(rootCfg, []byte(`{"jira":{"default_project":"ROOT"}}`), 0o644))
+	require.NoError(t, os.WriteFile(childCfg, []byte(`{"jira":{"default_project":"CHILD"}}`), 0o644))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(child))
+	defer func() { _ = os.Chdir(origDir) }()
+
+	assert.Equal(t, ConfigFilename, filepath.Base(NearestConfigPath()))
+	assert.True(t, strings.HasSuffix(NearestConfigPath(), filepath.Join("a", ConfigFilename)))
+}
+
+func TestWriteProjectConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ConfigFilename)
+	data := map[string]any{
+		"jira": map[string]any{
+			"default_project": "PROJ",
+		},
+	}
+
+	require.NoError(t, WriteProjectConfig(path, data))
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"default_project": "PROJ"`)
+	assert.True(t, strings.HasSuffix(string(raw), "\n"))
 }
