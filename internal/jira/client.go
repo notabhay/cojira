@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,6 +28,7 @@ const (
 	DefaultAPIVersion = "2"
 	GreenhopperBase   = "/rest/greenhopper/1.0"
 	AgileBase         = "/rest/agile/1.0"
+	ServiceDeskBase   = "/rest/servicedeskapi"
 )
 
 // ClientConfig holds the parameters for creating a new JiraClient.
@@ -323,7 +325,7 @@ func (c *Client) requestWithURL(method, requestURL string, body []byte, params u
 	}
 
 	resp, err := httpclient.RequestWithCache(method, finalURL, c.cacheVaryKey, c.cacheConfig, func(extraHeaders http.Header) (*http.Response, error) {
-		return httpclient.RequestWithRetry(func() (*http.Response, error) {
+		return httpclient.RequestWithRetryURL(finalURL, func() (*http.Response, error) {
 			return requestFn(extraHeaders)
 		}, cfg, c.onRetry)
 	})
@@ -414,6 +416,73 @@ func (c *Client) Search(jql string, limit, startAt int, fields string, expand st
 		params.Set("expand", expand)
 	}
 	resp, err := c.Request("GET", "/search", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ValidateJQL parses a JQL query using Jira's validation endpoint.
+func (c *Client) ValidateJQL(jql string) (map[string]any, error) {
+	body, err := json.Marshal(map[string]any{
+		"queries":         []string{jql},
+		"validation":      "strict",
+		"failFast":        false,
+		"includeWarnings": true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.Request("POST", "/jql/parse", body, nil)
+	if err != nil {
+		var ce *cerrors.CojiraError
+		if errors.As(err, &ce) && (ce.Code == cerrors.HTTP404 || (ce.Code == cerrors.HTTPError && strings.Contains(ce.Message, "HTTP 404"))) {
+			return c.validateJQLViaSearch(jql)
+		}
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+func (c *Client) validateJQLViaSearch(jql string) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("jql", jql)
+	params.Set("maxResults", "0")
+	params.Set("validateQuery", "strict")
+	resp, err := c.Request("GET", "/search", nil, params)
+	if err != nil {
+		var ce *cerrors.CojiraError
+		if errors.As(err, &ce) && ce.Code == cerrors.HTTPError && strings.Contains(ce.Message, "HTTP 400") {
+			return map[string]any{
+				"queries": []map[string]any{{
+					"query":    jql,
+					"errors":   []string{ce.Message},
+					"warnings": []string{"Used search validation fallback because /jql/parse is unavailable on this Jira."},
+					"source":   "search-fallback",
+				}},
+			}, nil
+		}
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := decodeJSON(resp); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"queries": []map[string]any{{
+			"query":    jql,
+			"errors":   []string{},
+			"warnings": []string{"Used search validation fallback because /jql/parse is unavailable on this Jira."},
+			"source":   "search-fallback",
+		}},
+	}, nil
+}
+
+// GetJQLAutoCompleteData returns Jira JQL autocomplete metadata.
+func (c *Client) GetJQLAutoCompleteData() (map[string]any, error) {
+	resp, err := c.Request("GET", "/jql/autocompletedata", nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1008,6 +1077,273 @@ func (c *Client) AddIssuesToSprint(sprintID string, issues []string) error {
 	return nil
 }
 
+// GetBacklogIssues lists issues currently in a board backlog.
+func (c *Client) GetBacklogIssues(boardID, jql string, limit, startAt int, fields, expand string) (map[string]any, error) {
+	requestURL := fmt.Sprintf("%s%s/board/%s/backlog", c.apiBaseURL, AgileBase, boardID)
+	params := url.Values{}
+	params.Set("maxResults", fmt.Sprintf("%d", limit))
+	params.Set("startAt", fmt.Sprintf("%d", startAt))
+	if strings.TrimSpace(jql) != "" {
+		params.Set("jql", jql)
+	}
+	if strings.TrimSpace(fields) != "" {
+		params.Set("fields", fields)
+	}
+	if strings.TrimSpace(expand) != "" {
+		params.Set("expand", expand)
+	}
+	resp, err := c.RequestURL("GET", requestURL, nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// RankIssues reorders issues before or after another issue.
+func (c *Client) RankIssues(issues []string, rankBeforeIssue, rankAfterIssue string, rankCustomFieldID int) error {
+	requestURL := fmt.Sprintf("%s%s/issue/rank", c.apiBaseURL, AgileBase)
+	payload := map[string]any{"issues": issues}
+	if strings.TrimSpace(rankBeforeIssue) != "" {
+		payload["rankBeforeIssue"] = rankBeforeIssue
+	}
+	if strings.TrimSpace(rankAfterIssue) != "" {
+		payload["rankAfterIssue"] = rankAfterIssue
+	}
+	if rankCustomFieldID > 0 {
+		payload["rankCustomFieldId"] = rankCustomFieldID
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	resp, err := c.RequestURL("PUT", requestURL, body, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+func (c *Client) requestServiceDesk(method, path string, body []byte, params url.Values) (*http.Response, error) {
+	requestURL := strings.TrimRight(c.apiBaseURL, "/") + ServiceDeskBase + path
+	return c.RequestURL(method, requestURL, body, params)
+}
+
+// ListServiceDesks lists Jira Service Management desks visible to the current user.
+func (c *Client) ListServiceDesks(limit, startAt int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("limit", fmt.Sprintf("%d", limit))
+	params.Set("start", fmt.Sprintf("%d", startAt))
+	resp, err := c.requestServiceDesk("GET", "/servicedesk", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ListServiceDeskQueues lists queues for a service desk.
+func (c *Client) ListServiceDeskQueues(serviceDeskID string, limit, startAt int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("limit", fmt.Sprintf("%d", limit))
+	params.Set("start", fmt.Sprintf("%d", startAt))
+	resp, err := c.requestServiceDesk("GET", "/servicedesk/"+url.PathEscape(serviceDeskID)+"/queue", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ListQueueIssues lists requests/issues in a service desk queue.
+func (c *Client) ListQueueIssues(serviceDeskID, queueID string, limit, startAt int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("limit", fmt.Sprintf("%d", limit))
+	params.Set("start", fmt.Sprintf("%d", startAt))
+	resp, err := c.requestServiceDesk("GET", "/servicedesk/"+url.PathEscape(serviceDeskID)+"/queue/"+url.PathEscape(queueID)+"/issue", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ListCustomerRequests lists customer requests visible to the current user.
+func (c *Client) ListCustomerRequests(limit, startAt int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("limit", fmt.Sprintf("%d", limit))
+	params.Set("start", fmt.Sprintf("%d", startAt))
+	resp, err := c.requestServiceDesk("GET", "/request", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// GetCustomerRequest fetches a JSM request by issue key or id.
+func (c *Client) GetCustomerRequest(requestID string) (map[string]any, error) {
+	resp, err := c.requestServiceDesk("GET", "/request/"+url.PathEscape(requestID), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ListRequestApprovals lists approvals on a JSM request.
+func (c *Client) ListRequestApprovals(requestID string) (map[string]any, error) {
+	resp, err := c.requestServiceDesk("GET", "/request/"+url.PathEscape(requestID)+"/approval", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// DecideApproval approves or declines a JSM approval.
+func (c *Client) DecideApproval(requestID, approvalID, decision string) (map[string]any, error) {
+	body, err := json.Marshal(map[string]any{"decision": decision})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestServiceDesk("POST", "/request/"+url.PathEscape(requestID)+"/approval/"+url.PathEscape(approvalID), body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ListRequestSLAs lists SLA state for a JSM request.
+func (c *Client) ListRequestSLAs(requestID string) (map[string]any, error) {
+	resp, err := c.requestServiceDesk("GET", "/request/"+url.PathEscape(requestID)+"/sla", nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// MoveIssuesToBoard moves backlog issues onto a board, optionally ranking them.
+func (c *Client) MoveIssuesToBoard(boardID string, issues []string, rankBeforeIssue, rankAfterIssue string, rankCustomFieldID int) error {
+	requestURL := fmt.Sprintf("%s%s/board/%s/issue", c.apiBaseURL, AgileBase, boardID)
+	payload := map[string]any{"issues": issues}
+	if strings.TrimSpace(rankBeforeIssue) != "" {
+		payload["rankBeforeIssue"] = rankBeforeIssue
+	}
+	if strings.TrimSpace(rankAfterIssue) != "" {
+		payload["rankAfterIssue"] = rankAfterIssue
+	}
+	if rankCustomFieldID > 0 {
+		payload["rankCustomFieldId"] = rankCustomFieldID
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	resp, err := c.RequestURL("POST", requestURL, body, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// MoveIssuesToBacklog removes issues from active or future sprints.
+func (c *Client) MoveIssuesToBacklog(issues []string) error {
+	requestURL := fmt.Sprintf("%s%s/backlog/issue", c.apiBaseURL, AgileBase)
+	body, err := json.Marshal(map[string]any{"issues": issues})
+	if err != nil {
+		return err
+	}
+	resp, err := c.RequestURL("POST", requestURL, body, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// MoveIssuesToBacklogForBoard moves issues into a specific board backlog.
+func (c *Client) MoveIssuesToBacklogForBoard(boardID string, issues []string, rankBeforeIssue, rankAfterIssue string, rankCustomFieldID int) error {
+	requestURL := fmt.Sprintf("%s%s/backlog/%s/issue", c.apiBaseURL, AgileBase, boardID)
+	payload := map[string]any{"issues": issues}
+	if strings.TrimSpace(rankBeforeIssue) != "" {
+		payload["rankBeforeIssue"] = rankBeforeIssue
+	}
+	if strings.TrimSpace(rankAfterIssue) != "" {
+		payload["rankAfterIssue"] = rankAfterIssue
+	}
+	if rankCustomFieldID > 0 {
+		payload["rankCustomFieldId"] = rankCustomFieldID
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	resp, err := c.RequestURL("POST", requestURL, body, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// GetEpicIssues lists issues assigned to an epic.
+func (c *Client) GetEpicIssues(epicID, jql string, limit, startAt int, fields, expand string) (map[string]any, error) {
+	requestURL := fmt.Sprintf("%s%s/epic/%s/issue", c.apiBaseURL, AgileBase, url.PathEscape(epicID))
+	params := url.Values{}
+	params.Set("maxResults", fmt.Sprintf("%d", limit))
+	params.Set("startAt", fmt.Sprintf("%d", startAt))
+	if strings.TrimSpace(jql) != "" {
+		params.Set("jql", jql)
+	}
+	if strings.TrimSpace(fields) != "" {
+		params.Set("fields", fields)
+	}
+	if strings.TrimSpace(expand) != "" {
+		params.Set("expand", expand)
+	}
+	resp, err := c.RequestURL("GET", requestURL, nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// MoveIssuesToEpic assigns issues to an epic.
+func (c *Client) MoveIssuesToEpic(epicID string, issues []string) error {
+	requestURL := fmt.Sprintf("%s%s/epic/%s/issue", c.apiBaseURL, AgileBase, url.PathEscape(epicID))
+	body, err := json.Marshal(map[string]any{"issues": issues})
+	if err != nil {
+		return err
+	}
+	resp, err := c.RequestURL("POST", requestURL, body, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// RemoveIssuesFromEpic clears epic assignments for issues.
+func (c *Client) RemoveIssuesFromEpic(issues []string) error {
+	requestURL := fmt.Sprintf("%s%s/epic/none/issue", c.apiBaseURL, AgileBase)
+	body, err := json.Marshal(map[string]any{"issues": issues})
+	if err != nil {
+		return err
+	}
+	resp, err := c.RequestURL("POST", requestURL, body, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // ListAttachments returns attachment metadata from an issue.
 func (c *Client) ListAttachments(issue string) ([]map[string]any, error) {
 	data, err := c.GetIssue(issue, "attachment", "")
@@ -1036,14 +1372,22 @@ func (c *Client) UploadAttachment(issue, filePath string) (map[string]any, error
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
+	return c.uploadAttachmentReader(issue, filepath.Base(filePath), file)
+}
 
+// UploadAttachmentBytes uploads in-memory attachment content to a Jira issue.
+func (c *Client) UploadAttachmentBytes(issue, filename string, data []byte) (map[string]any, error) {
+	return c.uploadAttachmentReader(issue, filename, bytes.NewReader(data))
+}
+
+func (c *Client) uploadAttachmentReader(issue, filename string, reader io.Reader) (map[string]any, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+	part, err := writer.CreateFormFile("file", filepath.Base(filename))
 	if err != nil {
 		return nil, err
 	}
-	if _, err := io.Copy(part, file); err != nil {
+	if _, err := io.Copy(part, reader); err != nil {
 		return nil, err
 	}
 	if err := writer.Close(); err != nil {
@@ -1089,6 +1433,16 @@ func (c *Client) DownloadAttachment(contentURL, outputPath string) error {
 
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+// DownloadAttachmentContent fetches attachment bytes for hashing or custom sync logic.
+func (c *Client) DownloadAttachmentContent(contentURL string) ([]byte, error) {
+	resp, err := c.requestWithExtraHeaders("GET", contentURL, nil, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return io.ReadAll(resp.Body)
 }
 
 func decodeJSON(resp *http.Response) (map[string]any, error) {
@@ -1147,7 +1501,7 @@ func (c *Client) requestWithExtraHeaders(method, requestURL string, body []byte,
 		return c.doRequestWithHeaders(method, finalURL, body, extraHeaders)
 	}
 
-	resp, err := httpclient.RequestWithRetry(requestFn, cfg, c.onRetry)
+	resp, err := httpclient.RequestWithRetryURL(finalURL, requestFn, cfg, c.onRetry)
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Debug("http.error",

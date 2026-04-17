@@ -16,19 +16,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func envWithProfile(overrides map[string]string, key string) string {
+	if value := strings.TrimSpace(overrides[key]); value != "" {
+		return value
+	}
+	return strings.TrimSpace(os.Getenv(key))
+}
+
 // clientFromCmd creates a Confluence Client from the cobra command's environment.
 func clientFromCmd(cmd *cobra.Command) (*Client, error) {
-	baseURL := strings.TrimSpace(os.Getenv("CONFLUENCE_BASE_URL"))
+	overrides, profileName, err := cli.ProfileEnvOverrides(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	baseURL := envWithProfile(overrides, "CONFLUENCE_BASE_URL")
 	// Allow --base-url flag to override env.
 	if flagURL, _ := cmd.Flags().GetString("base-url"); flagURL != "" {
 		baseURL = flagURL
 	}
-	token := strings.TrimSpace(os.Getenv("CONFLUENCE_API_TOKEN"))
-	authMode := strings.TrimSpace(os.Getenv("CONFLUENCE_AUTH_MODE"))
-	apiVersion := strings.TrimSpace(os.Getenv("CONFLUENCE_API_VERSION"))
+	token := envWithProfile(overrides, "CONFLUENCE_API_TOKEN")
+	authMode := envWithProfile(overrides, "CONFLUENCE_AUTH_MODE")
+	apiVersion := envWithProfile(overrides, "CONFLUENCE_API_VERSION")
 	apiBaseURL := ""
 	if strings.EqualFold(authMode, "oauth2") {
-		resolved, err := oauth.ResolveAtlassianOAuth2(cmd.Context(), "confluence", baseURL, "CONFLUENCE")
+		resolved, err := oauth.ResolveAtlassianOAuth2WithOverrides(cmd.Context(), "confluence", baseURL, "CONFLUENCE", overrides)
 		if err != nil {
 			return nil, err
 		}
@@ -36,16 +48,19 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 		apiBaseURL = resolved.APIBaseURL
 	}
 	verifySSL := true
-	verifySSLStr := strings.TrimSpace(os.Getenv("CONFLUENCE_VERIFY_SSL"))
+	verifySSLStr := envWithProfile(overrides, "CONFLUENCE_VERIFY_SSL")
 	if verifySSLStr != "" {
 		switch strings.ToLower(verifySSLStr) {
 		case "false", "0", "no":
 			verifySSL = false
 		}
 	}
-	userAgent := strings.TrimSpace(os.Getenv("CONFLUENCE_USER_AGENT"))
+	userAgent := envWithProfile(overrides, "CONFLUENCE_USER_AGENT")
 	if userAgent == "" {
 		userAgent = confluenceDefaultUserAgent()
+	}
+	if profileName != "" {
+		userAgent = userAgent + " profile/" + profileName
 	}
 
 	rc := cli.BuildRetryConfig(cmd)
@@ -69,6 +84,8 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 			JitterRatio:       0.1,
 			RespectRetryAfter: true,
 			RetryExceptions:   true,
+			ClientRateLimit:   rc.ClientRateLimit,
+			ClientBurst:       rc.ClientBurst,
 			RetryStatuses:     map[int]bool{429: true, 500: true, 502: true, 503: true, 504: true},
 		},
 		CacheConfig: httpclient.CacheConfig{

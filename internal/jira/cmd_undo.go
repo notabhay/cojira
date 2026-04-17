@@ -106,11 +106,20 @@ func runUndoApply(cmd *cobra.Command, args []string) error {
 			"to_status":   entry.ToStatus,
 		}
 		if dryRun {
+			if entry.UndoAction != "" {
+				item["undo_action"] = entry.UndoAction
+				item["payload"] = cloneAnyMap(entry.Payload)
+			}
 			item["dry_run"] = true
 			results = append(results, item)
 			continue
 		}
 
+		if entry.UndoAction != "" {
+			if err := applyUndoAction(client, entry); err != nil {
+				return err
+			}
+		}
 		if entry.FromStatus != "" && entry.ToStatus != "" {
 			if err := revertIssueStatus(client, entry.Issue, entry.FromStatus); err != nil {
 				return err
@@ -144,6 +153,41 @@ func runUndoApply(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func applyUndoAction(client *Client, entry undo.IssueEntry) error {
+	switch entry.UndoAction {
+	case "comment.delete":
+		return client.DeleteComment(entry.Issue, normalizeMaybeString(entry.Payload["comment_id"]))
+	case "comment.add":
+		_, err := client.AddComment(entry.Issue, entry.Payload["body"])
+		return err
+	case "comment.update":
+		_, err := client.UpdateComment(entry.Issue, normalizeMaybeString(entry.Payload["comment_id"]), entry.Payload["body"])
+		return err
+	case "watcher.add":
+		return client.AddWatcher(entry.Issue, normalizeMaybeString(entry.Payload["value"]))
+	case "watcher.remove":
+		return client.RemoveWatcher(entry.Issue, normalizeMaybeString(entry.Payload["param_key"]), normalizeMaybeString(entry.Payload["value"]))
+	case "worklog.delete":
+		return client.DeleteWorklog(entry.Issue, normalizeMaybeString(entry.Payload["worklog_id"]))
+	case "worklog.add":
+		payload := cloneAnyMap(mapFromAny(entry.Payload["payload"]))
+		_, err := client.AddWorklog(entry.Issue, payload)
+		return err
+	case "worklog.update":
+		payload := cloneAnyMap(mapFromAny(entry.Payload["payload"]))
+		_, err := client.UpdateWorklog(entry.Issue, normalizeMaybeString(entry.Payload["worklog_id"]), payload)
+		return err
+	case "attachment.delete":
+		return client.DeleteAttachment(normalizeMaybeString(entry.Payload["attachment_id"]))
+	default:
+		return &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  fmt.Sprintf("Unsupported undo action %q for %s.", entry.UndoAction, entry.Issue),
+			ExitCode: 1,
+		}
+	}
+}
+
 func revertIssueStatus(client *Client, issueID, targetStatus string) error {
 	transitions, err := client.ListTransitions(issueID)
 	if err != nil {
@@ -175,6 +219,24 @@ func cloneAnyMap(input map[string]any) map[string]any {
 	var out map[string]any
 	if err := json.Unmarshal(data, &out); err != nil {
 		return input
+	}
+	return out
+}
+
+func mapFromAny(value any) map[string]any {
+	if value == nil {
+		return nil
+	}
+	if typed, ok := value.(map[string]any); ok {
+		return typed
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
 	}
 	return out
 }

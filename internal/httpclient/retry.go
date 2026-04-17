@@ -5,8 +5,10 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,6 +23,8 @@ type RetryConfig struct {
 	RespectRetryAfter bool
 	RetryExceptions   bool
 	RetryStatuses     map[int]bool
+	ClientRateLimit   float64
+	ClientBurst       int
 	// Sleep overrides time.Sleep for testing. If nil, uses time.Sleep.
 	Sleep func(time.Duration)
 }
@@ -35,6 +39,7 @@ func DefaultRetryConfig() RetryConfig {
 		JitterRatio:       0.1,
 		RespectRetryAfter: true,
 		RetryExceptions:   true,
+		ClientBurst:       4,
 		RetryStatuses: map[int]bool{
 			429: true, 500: true, 502: true, 503: true, 504: true,
 		},
@@ -47,6 +52,16 @@ type OnRetryFunc func(attempt int, delay time.Duration, statusCode int)
 
 // RequestFunc makes an HTTP request and returns a response.
 type RequestFunc func() (*http.Response, error)
+
+type tokenBucket struct {
+	last   time.Time
+	tokens float64
+}
+
+var (
+	rateMu      sync.Mutex
+	rateBuckets = map[string]*tokenBucket{}
+)
 
 func computeBackoff(attempt int, baseDelay, maxDelay time.Duration, jitterRatio float64) time.Duration {
 	delay := float64(baseDelay) * math.Pow(2, float64(attempt))
@@ -108,6 +123,52 @@ func (c *RetryConfig) sleep(d time.Duration) {
 		c.Sleep(d)
 	} else {
 		time.Sleep(d)
+	}
+}
+
+func rateKeyFromURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	host := strings.TrimSpace(u.Host)
+	if host == "" {
+		return raw
+	}
+	return host
+}
+
+func acquireRateToken(key string, cfg RetryConfig) {
+	if cfg.ClientRateLimit <= 0 {
+		return
+	}
+	burst := cfg.ClientBurst
+	if burst <= 0 {
+		burst = 1
+	}
+	for {
+		rateMu.Lock()
+		bucket := rateBuckets[key]
+		if bucket == nil {
+			bucket = &tokenBucket{last: time.Now(), tokens: float64(burst)}
+			rateBuckets[key] = bucket
+		}
+		now := time.Now()
+		elapsed := now.Sub(bucket.last).Seconds()
+		bucket.tokens = math.Min(float64(burst), bucket.tokens+elapsed*cfg.ClientRateLimit)
+		bucket.last = now
+		if bucket.tokens >= 1 {
+			bucket.tokens -= 1
+			rateMu.Unlock()
+			return
+		}
+		needed := (1 - bucket.tokens) / cfg.ClientRateLimit
+		rateMu.Unlock()
+		delay := time.Duration(needed * float64(time.Second))
+		if delay <= 0 {
+			delay = 10 * time.Millisecond
+		}
+		cfg.sleep(delay)
 	}
 }
 
@@ -193,4 +254,10 @@ func RequestWithRetry(requestFn RequestFunc, config RetryConfig, onRetry OnRetry
 		return resp, nil
 	}
 	return nil, lastErr
+}
+
+// RequestWithRetryURL applies proactive per-host rate limiting before calling RequestWithRetry.
+func RequestWithRetryURL(requestURL string, requestFn RequestFunc, config RetryConfig, onRetry OnRetryFunc) (*http.Response, error) {
+	acquireRateToken(rateKeyFromURL(requestURL), config)
+	return RequestWithRetry(requestFn, config, onRetry)
 }

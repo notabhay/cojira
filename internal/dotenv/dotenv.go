@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/notabhay/cojira/internal/credstore"
 )
 
 // CredentialsPath returns the default path for global cojira credentials
@@ -132,6 +134,14 @@ func LoadIfPresentOnce(paths []string) string {
 
 // LoadDefaultOnce loads the default search paths at most once per process.
 func LoadDefaultOnce() string {
+	if values, store, err := credstore.Load(); err == nil && store == credstore.StoreKeyring {
+		for key, value := range values {
+			if _, exists := os.LookupEnv(key); exists {
+				continue
+			}
+			_ = os.Setenv(key, value)
+		}
+	}
 	return LoadIfPresentOnce(DefaultSearchPaths())
 }
 

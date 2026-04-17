@@ -210,6 +210,14 @@ func mutateWorklog(client *Client, issueID, worklogID, action string, payload ma
 		fmt.Printf("Skipped duplicate worklog %s for %s.\n", action, issueID)
 		return nil
 	}
+	var previous map[string]any
+	if action == "update" {
+		var lookupErr error
+		previous, lookupErr = findWorklogByID(client, issueID, worklogID)
+		if lookupErr != nil {
+			return lookupErr
+		}
+	}
 
 	var (
 		result map[string]any
@@ -223,6 +231,17 @@ func mutateWorklog(client *Client, issueID, worklogID, action string, payload ma
 	}
 	if err != nil {
 		return err
+	}
+	switch action {
+	case "add":
+		recordUndoAction("", issueID, "jira.worklog.add", "worklog.delete", map[string]any{
+			"worklog_id": normalizeMaybeString(result["id"]),
+		})
+	case "update":
+		recordUndoAction("", issueID, "jira.worklog.update", "worklog.update", map[string]any{
+			"worklog_id": worklogID,
+			"payload":    worklogUndoPayload(previous),
+		})
 	}
 	if idemKey != "" {
 		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.worklog %s %s", action, issueID))
@@ -258,9 +277,16 @@ func runDeleteWorklog(cmd *cobra.Command, client *Client, issueID, worklogID str
 		fmt.Printf("Skipped duplicate worklog delete for %s.\n", issueID)
 		return nil
 	}
+	previous, err := findWorklogByID(client, issueID, worklogID)
+	if err != nil {
+		return err
+	}
 	if err := client.DeleteWorklog(issueID, worklogID); err != nil {
 		return err
 	}
+	recordUndoAction("", issueID, "jira.worklog.delete", "worklog.add", map[string]any{
+		"payload": worklogUndoPayload(previous),
+	})
 	if idemKey != "" {
 		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.worklog delete %s", issueID))
 	}
@@ -273,4 +299,43 @@ func runDeleteWorklog(cmd *cobra.Command, client *Client, issueID, worklogID str
 	}
 	fmt.Printf("Deleted worklog %s on %s.\n", worklogID, issueID)
 	return nil
+}
+
+func findWorklogByID(client *Client, issueID, worklogID string) (map[string]any, error) {
+	offset := 0
+	pageSize := 50
+	for {
+		data, err := client.ListWorklogs(issueID, pageSize, offset)
+		if err != nil {
+			return nil, err
+		}
+		raw, _ := data["worklogs"].([]any)
+		items := coerceJSONArray(raw)
+		for _, item := range items {
+			if normalizeMaybeString(item["id"]) == worklogID {
+				return item, nil
+			}
+		}
+		offset += len(items)
+		total := intFromAny(data["total"], len(items))
+		if len(items) == 0 || offset >= total {
+			break
+		}
+	}
+	return nil, &cerrors.CojiraError{
+		Code:     cerrors.IdentUnresolved,
+		Message:  fmt.Sprintf("Worklog %s was not found on %s.", worklogID, issueID),
+		ExitCode: 1,
+	}
+}
+
+func worklogUndoPayload(worklog map[string]any) map[string]any {
+	if worklog == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"timeSpent": normalizeMaybeString(worklog["timeSpent"]),
+		"started":   normalizeMaybeString(worklog["started"]),
+		"comment":   worklog["comment"],
+	}
 }

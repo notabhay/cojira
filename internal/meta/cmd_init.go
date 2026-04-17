@@ -188,7 +188,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 		RetryBaseDelay: 0.5,
 		RetryMaxDelay:  4.0,
 		Debug:          false,
-	})
+	}, nil, "")
 	allOK := true
 	for _, r := range results {
 		if !r.OK {

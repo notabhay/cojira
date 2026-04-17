@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -19,16 +20,27 @@ type ConfigError struct {
 	Code        string
 	Message     string
 	UserMessage string
-	ExitCode    int
+	ExitStatus  int
 }
 
 func (e *ConfigError) Error() string {
 	return e.Message
 }
 
+// ExitCode returns the process exit code associated with the config error.
+func (e *ConfigError) ExitCode() int {
+	return e.ExitStatus
+}
+
 // ProjectConfig holds the parsed project configuration from .cojira.json.
 type ProjectConfig struct {
 	Path string
+	Data map[string]any
+}
+
+// Profile represents a named profile loaded from .cojira.json.
+type Profile struct {
+	Name string
 	Data map[string]any
 }
 
@@ -116,7 +128,7 @@ func coerceMapping(data map[string]any, name string, path string) error {
 			Code:        CodeConfigInvalid,
 			Message:     fmt.Sprintf("%s has invalid %s section (expected an object).", path, name),
 			UserMessage: fmt.Sprintf("Your %s file has an invalid '%s' section.", ConfigFilename, name),
-			ExitCode:    2,
+			ExitStatus:  2,
 		}
 	}
 	return nil
@@ -138,7 +150,7 @@ func parseConfigFile(configPath string) (*ProjectConfig, error) {
 			Code:        CodeConfigInvalid,
 			Message:     fmt.Sprintf("Unable to read %s: %v", configPath, err),
 			UserMessage: fmt.Sprintf("I couldn't read %s. Check file permissions.", ConfigFilename),
-			ExitCode:    2,
+			ExitStatus:  2,
 		}
 	}
 
@@ -147,7 +159,7 @@ func parseConfigFile(configPath string) (*ProjectConfig, error) {
 			Code:        CodeConfigInvalid,
 			Message:     fmt.Sprintf("%s is empty.", configPath),
 			UserMessage: fmt.Sprintf("Your %s file is empty.", ConfigFilename),
-			ExitCode:    2,
+			ExitStatus:  2,
 		}
 	}
 
@@ -157,7 +169,7 @@ func parseConfigFile(configPath string) (*ProjectConfig, error) {
 			Code:        CodeConfigInvalid,
 			Message:     fmt.Sprintf("Invalid JSON in %s: %v", configPath, err),
 			UserMessage: fmt.Sprintf("Your %s file isn't valid JSON.", ConfigFilename),
-			ExitCode:    2,
+			ExitStatus:  2,
 		}
 	}
 
@@ -167,11 +179,11 @@ func parseConfigFile(configPath string) (*ProjectConfig, error) {
 			Code:        CodeConfigInvalid,
 			Message:     fmt.Sprintf("%s JSON root must be an object.", configPath),
 			UserMessage: fmt.Sprintf("Your %s file must contain a JSON object at the top level.", ConfigFilename),
-			ExitCode:    2,
+			ExitStatus:  2,
 		}
 	}
 
-	for _, section := range []string{"jira", "confluence", "aliases"} {
+	for _, section := range []string{"jira", "confluence", "aliases", "profiles"} {
 		if err := coerceMapping(m, section, configPath); err != nil {
 			return nil, err
 		}
@@ -245,7 +257,7 @@ func WriteProjectConfig(path string, data map[string]any) error {
 			Code:        CodeConfigInvalid,
 			Message:     "Config path is required.",
 			UserMessage: fmt.Sprintf("I couldn't determine where to write %s.", ConfigFilename),
-			ExitCode:    2,
+			ExitStatus:  2,
 		}
 	}
 	if data == nil {
@@ -257,7 +269,7 @@ func WriteProjectConfig(path string, data map[string]any) error {
 			Code:        CodeConfigInvalid,
 			Message:     fmt.Sprintf("Unable to encode %s: %v", path, err),
 			UserMessage: fmt.Sprintf("I couldn't save %s because the generated JSON was invalid.", ConfigFilename),
-			ExitCode:    2,
+			ExitStatus:  2,
 		}
 	}
 	encoded = append(encoded, '\n')
@@ -324,4 +336,175 @@ func LoadProjectConfig(paths []string) (*ProjectConfig, error) {
 		}
 	}
 	return nil, nil
+}
+
+var profileEnvKeyMap = map[string]string{
+	"jira.base_url":                  "JIRA_BASE_URL",
+	"jira.api_token":                 "JIRA_API_TOKEN",
+	"jira.email":                     "JIRA_EMAIL",
+	"jira.project":                   "JIRA_PROJECT",
+	"jira.api_version":               "JIRA_API_VERSION",
+	"jira.auth_mode":                 "JIRA_AUTH_MODE",
+	"jira.verify_ssl":                "JIRA_VERIFY_SSL",
+	"jira.user_agent":                "JIRA_USER_AGENT",
+	"jira.oauth_access_token":        "JIRA_OAUTH_ACCESS_TOKEN",
+	"jira.oauth_refresh_token":       "JIRA_OAUTH_REFRESH_TOKEN",
+	"jira.oauth_client_id":           "JIRA_OAUTH_CLIENT_ID",
+	"jira.oauth_client_secret":       "JIRA_OAUTH_CLIENT_SECRET",
+	"jira.oauth_token_url":           "JIRA_OAUTH_TOKEN_URL",
+	"jira.oauth_cloud_id":            "JIRA_OAUTH_CLOUD_ID",
+	"jira.oauth_expiry":              "JIRA_OAUTH_EXPIRY",
+	"confluence.base_url":            "CONFLUENCE_BASE_URL",
+	"confluence.api_token":           "CONFLUENCE_API_TOKEN",
+	"confluence.api_version":         "CONFLUENCE_API_VERSION",
+	"confluence.auth_mode":           "CONFLUENCE_AUTH_MODE",
+	"confluence.verify_ssl":          "CONFLUENCE_VERIFY_SSL",
+	"confluence.user_agent":          "CONFLUENCE_USER_AGENT",
+	"confluence.oauth_access_token":  "CONFLUENCE_OAUTH_ACCESS_TOKEN",
+	"confluence.oauth_refresh_token": "CONFLUENCE_OAUTH_REFRESH_TOKEN",
+	"confluence.oauth_client_id":     "CONFLUENCE_OAUTH_CLIENT_ID",
+	"confluence.oauth_client_secret": "CONFLUENCE_OAUTH_CLIENT_SECRET",
+	"confluence.oauth_token_url":     "CONFLUENCE_OAUTH_TOKEN_URL",
+	"confluence.oauth_cloud_id":      "CONFLUENCE_OAUTH_CLOUD_ID",
+	"confluence.oauth_expiry":        "CONFLUENCE_OAUTH_EXPIRY",
+}
+
+func resolveProfileName(cfg *ProjectConfig, requested string) string {
+	if strings.TrimSpace(requested) != "" {
+		return strings.TrimSpace(requested)
+	}
+	if env := strings.TrimSpace(os.Getenv("COJIRA_PROFILE")); env != "" {
+		return env
+	}
+	if cfg == nil {
+		return ""
+	}
+	if value, ok := cfg.GetValue([]string{"default_profile"}, "").(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
+}
+
+// ResolveProfileName resolves the effective profile name from explicit input,
+// environment, or the current project config default_profile value.
+func ResolveProfileName(requested string) (string, error) {
+	cfg, err := LoadProjectConfig(nil)
+	if err != nil {
+		return "", err
+	}
+	return resolveProfileName(cfg, requested), nil
+}
+
+// LoadProfile loads a named profile from the merged project config. When
+// requested is empty it falls back to COJIRA_PROFILE and default_profile.
+func LoadProfile(requested string) (*Profile, error) {
+	cfg, err := LoadProjectConfig(nil)
+	if err != nil {
+		return nil, err
+	}
+	name := resolveProfileName(cfg, requested)
+	if name == "" {
+		return nil, nil
+	}
+	if cfg == nil {
+		return nil, &ConfigError{
+			Code:        CodeConfigInvalid,
+			Message:     fmt.Sprintf("Profile %q was requested but no %s file was found.", name, ConfigFilename),
+			UserMessage: fmt.Sprintf("I couldn't find profile %q because %s is missing.", name, ConfigFilename),
+			ExitStatus:  2,
+		}
+	}
+	profiles := cfg.GetSection("profiles")
+	raw, ok := profiles[name]
+	if !ok {
+		return nil, &ConfigError{
+			Code:        CodeConfigInvalid,
+			Message:     fmt.Sprintf("Profile %q was not found in %s.", name, cfg.Path),
+			UserMessage: fmt.Sprintf("Your %s file does not define profile %q.", ConfigFilename, name),
+			ExitStatus:  2,
+		}
+	}
+	data, ok := raw.(map[string]any)
+	if !ok {
+		return nil, &ConfigError{
+			Code:        CodeConfigInvalid,
+			Message:     fmt.Sprintf("Profile %q in %s must be an object.", name, cfg.Path),
+			UserMessage: fmt.Sprintf("Profile %q in %s is invalid.", name, ConfigFilename),
+			ExitStatus:  2,
+		}
+	}
+	return &Profile{Name: name, Data: data}, nil
+}
+
+// ListProfileNames returns the sorted profile names defined in the merged
+// project config.
+func ListProfileNames() ([]string, error) {
+	cfg, err := LoadProjectConfig(nil)
+	if err != nil || cfg == nil {
+		return nil, err
+	}
+	profiles := cfg.GetSection("profiles")
+	names := make([]string, 0, len(profiles))
+	for name := range profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func coerceProfileEnvValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case bool:
+		if typed {
+			return "true"
+		}
+		return "false"
+	case float64:
+		return strings.TrimSpace(strings.TrimSuffix(fmt.Sprintf("%.0f", typed), ".0"))
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", value))
+	}
+}
+
+func addStructuredProfileEnv(overrides map[string]string, prefix string, values map[string]any) {
+	for key, raw := range values {
+		envKey, ok := profileEnvKeyMap[prefix+"."+key]
+		if !ok {
+			continue
+		}
+		value := coerceProfileEnvValue(raw)
+		if value == "" {
+			continue
+		}
+		overrides[envKey] = value
+	}
+}
+
+// ProfileEnvOverrides converts the selected profile into environment-style
+// overrides. Direct env entries under profiles.<name>.env override structured
+// jira/confluence values.
+func ProfileEnvOverrides(requested string) (map[string]string, string, error) {
+	profile, err := LoadProfile(requested)
+	if err != nil || profile == nil {
+		return map[string]string{}, "", err
+	}
+	overrides := map[string]string{}
+	if jiraData, ok := profile.Data["jira"].(map[string]any); ok {
+		addStructuredProfileEnv(overrides, "jira", jiraData)
+	}
+	if confData, ok := profile.Data["confluence"].(map[string]any); ok {
+		addStructuredProfileEnv(overrides, "confluence", confData)
+	}
+	if envData, ok := profile.Data["env"].(map[string]any); ok {
+		for key, raw := range envData {
+			value := coerceProfileEnvValue(raw)
+			if strings.TrimSpace(key) == "" || value == "" {
+				continue
+			}
+			overrides[strings.TrimSpace(key)] = value
+		}
+	}
+	return overrides, profile.Name, nil
 }

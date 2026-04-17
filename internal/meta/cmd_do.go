@@ -10,6 +10,8 @@ import (
 	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 var (
@@ -164,7 +166,7 @@ func parseIntent(text string) []string {
 	}
 
 	if m := storyPointsRe.FindStringSubmatch(t); m != nil {
-		return []string{"jira", "update", m[1], "--set", "Story Points="+strings.TrimSpace(m[2]), "--dry-run"}
+		return []string{"jira", "update", m[1], "--set", "Story Points=" + strings.TrimSpace(m[2]), "--dry-run"}
 	}
 
 	if m := sprintProgressRe.FindStringSubmatch(t); m != nil {
@@ -277,7 +279,7 @@ func parseIntent(text string) []string {
 				args = append(args, "--project", project)
 			}
 			if issueType != "" {
-				args = append(args, "--type", strings.Title(strings.ToLower(issueType)))
+				args = append(args, "--type", cases.Title(language.Und).String(strings.ToLower(issueType)))
 			}
 			return args
 		}

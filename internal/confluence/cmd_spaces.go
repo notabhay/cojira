@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/notabhay/cojira/internal/cli"
+	cerrors "github.com/notabhay/cojira/internal/errors"
+	"github.com/notabhay/cojira/internal/idempotency"
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -23,6 +25,8 @@ func NewSpacesCmd() *cobra.Command {
 	cmd.Flags().Int("page-size", 50, "Page size when using --all")
 	cli.AddOutputFlags(cmd, true)
 	cli.AddHTTPRetryFlags(cmd)
+	cli.AddIdempotencyFlags(cmd)
+	cmd.AddCommand(newSpacesGetCmd(), newSpacesCreateCmd(), newSpacesUpdateCmd(), newSpacesDeleteCmd())
 	return cmd
 }
 
@@ -119,6 +123,252 @@ func runSpaces(cmd *cobra.Command, args []string) error {
 		})
 	}
 	fmt.Println(output.TableString([]string{"KEY", "TYPE", "NAME"}, rows))
+	return nil
+}
+
+func newSpacesGetCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "get <key>",
+		Short: "Get a Confluence space by key",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mode := cli.NormalizeOutputMode(cmd)
+			client, err := clientFromCmd(cmd)
+			if err != nil {
+				return err
+			}
+			space, err := client.GetSpace(args[0])
+			if err != nil {
+				return err
+			}
+			if mode == "json" {
+				return output.PrintJSON(output.BuildEnvelope(true, "confluence", "spaces.get", map[string]any{"key": args[0]}, space, nil, nil, "", "", "", nil))
+			}
+			if mode == "summary" {
+				fmt.Printf("Found Confluence space %s.\n", args[0])
+				return nil
+			}
+			fmt.Printf("Space %s: %s\n", normalizeMaybeString(space["key"]), normalizeMaybeString(space["name"]))
+			return nil
+		},
+	}
+	cli.AddOutputFlags(cmd, true)
+	cli.AddHTTPRetryFlags(cmd)
+	return cmd
+}
+
+func newSpacesCreateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "create <key>",
+		Short: "Create a Confluence space",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runSpacesCreate,
+	}
+	addSpaceMutationFlags(cmd)
+	return cmd
+}
+
+func newSpacesUpdateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "update <key>",
+		Short: "Update a Confluence space",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runSpacesUpdate,
+	}
+	addSpaceMutationFlags(cmd)
+	return cmd
+}
+
+func newSpacesDeleteCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete <key>",
+		Short: "Delete a Confluence space",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runSpacesDelete,
+	}
+	cmd.Flags().Bool("dry-run", false, "Preview the delete without applying")
+	cmd.Flags().Bool("plan", false, "Alias for --dry-run")
+	cmd.Flags().Bool("yes", false, "Confirm deleting the space")
+	cli.AddOutputFlags(cmd, true)
+	cli.AddHTTPRetryFlags(cmd)
+	cli.AddIdempotencyFlags(cmd)
+	return cmd
+}
+
+func addSpaceMutationFlags(cmd *cobra.Command) {
+	cmd.Flags().String("name", "", "Space name")
+	cmd.Flags().String("description", "", "Space description")
+	cmd.Flags().String("file", "", "Read description from a file")
+	cmd.Flags().String("type", "global", "Space type")
+	cmd.Flags().Bool("dry-run", false, "Preview the change without applying")
+	cmd.Flags().Bool("plan", false, "Alias for --dry-run")
+	cli.AddOutputFlags(cmd, true)
+	cli.AddHTTPRetryFlags(cmd)
+	cli.AddIdempotencyFlags(cmd)
+}
+
+func runSpacesCreate(cmd *cobra.Command, args []string) error {
+	cli.ApplyPlanFlag(cmd)
+	mode := cli.NormalizeOutputMode(cmd)
+	client, err := clientFromCmd(cmd)
+	if err != nil {
+		return err
+	}
+	payload, target, dryRun, idemKey, err := buildSpacePayload(cmd, args[0], true)
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		return printSpaceMutationPreview(mode, "spaces.create", target, payload)
+	}
+	if idemKey != "" && idempotency.IsDuplicate(idemKey) {
+		return printSpaceMutationSkip(mode, "spaces.create", target)
+	}
+	result, err := client.CreateSpace(payload)
+	if err != nil {
+		return err
+	}
+	if idemKey != "" {
+		_ = idempotency.Record(idemKey, fmt.Sprintf("confluence.space.create %s", args[0]))
+	}
+	return printSpaceMutationResult(mode, "spaces.create", target, result, "Created")
+}
+
+func runSpacesUpdate(cmd *cobra.Command, args []string) error {
+	cli.ApplyPlanFlag(cmd)
+	mode := cli.NormalizeOutputMode(cmd)
+	client, err := clientFromCmd(cmd)
+	if err != nil {
+		return err
+	}
+	payload, target, dryRun, idemKey, err := buildSpacePayload(cmd, args[0], false)
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		return printSpaceMutationPreview(mode, "spaces.update", target, payload)
+	}
+	if idemKey != "" && idempotency.IsDuplicate(idemKey) {
+		return printSpaceMutationSkip(mode, "spaces.update", target)
+	}
+	result, err := client.UpdateSpace(args[0], payload)
+	if err != nil {
+		return err
+	}
+	if idemKey != "" {
+		_ = idempotency.Record(idemKey, fmt.Sprintf("confluence.space.update %s", args[0]))
+	}
+	return printSpaceMutationResult(mode, "spaces.update", target, result, "Updated")
+}
+
+func runSpacesDelete(cmd *cobra.Command, args []string) error {
+	cli.ApplyPlanFlag(cmd)
+	mode := cli.NormalizeOutputMode(cmd)
+	client, err := clientFromCmd(cmd)
+	if err != nil {
+		return err
+	}
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	yes, _ := cmd.Flags().GetBool("yes")
+	idemKey, _ := cmd.Flags().GetString("idempotency-key")
+	target := map[string]any{"key": args[0]}
+	if dryRun {
+		return printSpaceMutationPreview(mode, "spaces.delete", target, map[string]any{"key": args[0]})
+	}
+	if !yes {
+		return &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "Refusing to delete a space without --yes.", ExitCode: 2}
+	}
+	if idemKey != "" && idempotency.IsDuplicate(idemKey) {
+		return printSpaceMutationSkip(mode, "spaces.delete", target)
+	}
+	if err := client.DeleteSpace(args[0]); err != nil {
+		return err
+	}
+	if idemKey != "" {
+		_ = idempotency.Record(idemKey, fmt.Sprintf("confluence.space.delete %s", args[0]))
+	}
+	if mode == "json" {
+		return output.PrintJSON(output.BuildEnvelope(true, "confluence", "spaces.delete", target, map[string]any{"deleted": true}, nil, nil, "", "", "", nil))
+	}
+	if mode == "summary" {
+		fmt.Printf("Deleted Confluence space %s.\n", args[0])
+		return nil
+	}
+	fmt.Printf("Deleted Confluence space %s.\n", args[0])
+	return nil
+}
+
+func buildSpacePayload(cmd *cobra.Command, key string, requireName bool) (map[string]any, map[string]any, bool, string, error) {
+	name, _ := cmd.Flags().GetString("name")
+	description, _ := cmd.Flags().GetString("description")
+	filePath, _ := cmd.Flags().GetString("file")
+	spaceType, _ := cmd.Flags().GetString("type")
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	idemKey, _ := cmd.Flags().GetString("idempotency-key")
+	if description != "" && filePath != "" {
+		return nil, nil, false, "", &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "Use either --description or --file, not both.", ExitCode: 2}
+	}
+	if filePath != "" {
+		content, err := readTextFile(filePath)
+		if err != nil {
+			return nil, nil, false, "", err
+		}
+		description = content
+	}
+	if requireName && strings.TrimSpace(name) == "" {
+		return nil, nil, false, "", &cerrors.CojiraError{Code: cerrors.OpFailed, Message: "--name is required when creating a space.", ExitCode: 2}
+	}
+	if strings.TrimSpace(spaceType) == "" {
+		spaceType = "global"
+	}
+	payload := map[string]any{
+		"key":  key,
+		"type": spaceType,
+	}
+	if strings.TrimSpace(name) != "" {
+		payload["name"] = name
+	}
+	if strings.TrimSpace(description) != "" {
+		payload["description"] = map[string]any{
+			"plain": map[string]any{
+				"value":          description,
+				"representation": "plain",
+			},
+		}
+	}
+	target := map[string]any{"key": key}
+	return payload, target, dryRun, idemKey, nil
+}
+
+func printSpaceMutationPreview(mode, command string, target map[string]any, payload map[string]any) error {
+	if mode == "json" {
+		return output.PrintJSON(output.BuildEnvelope(true, "confluence", command, target, map[string]any{"dry_run": true, "payload": payload}, nil, nil, "", "", "", nil))
+	}
+	if mode == "summary" {
+		fmt.Printf("Would apply %s for space %s.\n", command, normalizeMaybeString(target["key"]))
+		return nil
+	}
+	fmt.Printf("Would apply %s for space %s.\n", command, normalizeMaybeString(target["key"]))
+	return nil
+}
+
+func printSpaceMutationSkip(mode, command string, target map[string]any) error {
+	if mode == "json" {
+		return output.PrintJSON(output.BuildEnvelope(true, "confluence", command, target, map[string]any{"skipped": true, "reason": "idempotency_key_already_used"}, nil, nil, "", "", "", nil))
+	}
+	fmt.Printf("Skipped duplicate %s for %s.\n", command, normalizeMaybeString(target["key"]))
+	return nil
+}
+
+func printSpaceMutationResult(mode, command string, target map[string]any, result map[string]any, verb string) error {
+	if mode == "json" {
+		return output.PrintJSON(output.BuildEnvelope(true, "confluence", command, target, result, nil, nil, "", "", "", nil))
+	}
+	if mode == "summary" {
+		fmt.Printf("%s Confluence space %s.\n", verb, normalizeMaybeString(target["key"]))
+		return nil
+	}
+	fmt.Printf("%s Confluence space %s.\n", verb, normalizeMaybeString(target["key"]))
 	return nil
 }
 

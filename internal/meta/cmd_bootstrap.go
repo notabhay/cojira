@@ -132,7 +132,7 @@ func runBootstrap(cmd *cobra.Command, _ []string) error {
 	type writeItem struct{ src, dst string }
 	writes := []writeItem{
 		{"workspace/AGENTS.md", filepath.Join(targetDir, "AGENTS.md")},
-		{"workspace/CLAUDE.md", filepath.Join(targetDir, "CLAUDE.md")},
+		{"workspace/AGENTS.md", filepath.Join(targetDir, "CLAUDE.md")},
 	}
 
 	wroteAny := false

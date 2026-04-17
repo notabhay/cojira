@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/google/shlex"
@@ -14,52 +15,47 @@ import (
 
 const maxAliasDepth = 3
 
+var rootExamples = []string{
+	"  cojira describe --output-mode json",
+	"  cojira auth status",
+	"  cojira do 'move PROJ-123 to Done'",
+	"  cojira doctor",
+	"  cojira events tail --latest",
+	"  cojira dry-run record jira transition PROJ-123 --to Done",
+	"  cojira apply <plan-id> --yes",
+	"  cojira convert --from markdown --to jira-wiki -f note.md",
+	"  cojira bootstrap",
+	"  cojira confluence --help",
+	"  cojira jira --help",
+}
+
 // NewRootCmd creates the root cobra command for cojira.
 // Callers should add subcommands to it (confluence, jira, meta commands, etc.)
 // before calling Execute.
 func NewRootCmd(version string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "cojira",
-		Short: "Agent-first Confluence + Jira automation",
-		Long: `cojira: agent-first Confluence + Jira automation
-
-Usage:
-  cojira <tool> [args]
-
-Tools:
-  describe     Print machine-readable capabilities (for agents)
-  do           Parse natural-language intent into a command
-  doctor       Pre-flight config/connectivity checks
-  init         Interactive setup wizard for humans
-  plan         Preview a command without applying changes
-  convert      Convert markdown into Confluence storage XHTML or Jira wiki text
-  bootstrap    Merge cojira guidance into AGENTS.md and CLAUDE.md
-  confluence   Confluence page management
-  jira         Jira issue management
-
-Examples:
-  cojira describe --output-mode json
-  cojira do 'move PROJ-123 to Done'
-  cojira doctor
-  cojira convert --from markdown --to jira-wiki -f note.md
-  cojira bootstrap
-  cojira confluence --help
-  cojira jira --help`,
+		Use:           "cojira",
+		Short:         "Agent-first Confluence + Jira automation",
+		Long:          "cojira: agent-first Confluence + Jira automation",
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 
 	cmd.TraverseChildren = true
+	cmd.PersistentFlags().String("profile", "", "Named profile from .cojira.json (falls back to COJIRA_PROFILE or default_profile)")
+	cmd.PersistentFlags().Bool("stream", false, "Emit newline-delimited JSON output when supported")
+	cmd.PersistentFlags().String("select", "", "Client-side projection for JSON or NDJSON output (for example: result.issues)")
 	return cmd
 }
 
 // Execute runs the given root command with alias expansion support.
 func Execute(rootCmd *cobra.Command) error {
+	rootCmd.Long = buildRootLong(rootCmd)
 	args := os.Args[1:]
 	if len(args) > 0 {
 		tool := strings.ToLower(strings.TrimSpace(args[0]))
-		if expanded := tryExpandAlias(tool, args[1:], 0); expanded != nil {
+		if expanded := tryExpandAlias(rootCmd, tool, args[1:], 0); expanded != nil {
 			rootCmd.SetArgs(expanded)
 			return rootCmd.Execute()
 		}
@@ -68,19 +64,13 @@ func Execute(rootCmd *cobra.Command) error {
 }
 
 // tryExpandAlias checks if `tool` is a configured alias in .cojira.json.
-func tryExpandAlias(tool string, rest []string, depth int) []string {
+func tryExpandAlias(rootCmd *cobra.Command, tool string, rest []string, depth int) []string {
 	if depth >= maxAliasDepth {
 		fmt.Fprintln(os.Stderr, "Error: Alias expansion depth exceeded (possible loop)")
 		return nil
 	}
 
-	builtins := map[string]bool{
-		"confluence": true, "jira": true, "bootstrap": true,
-		"describe": true, "do": true, "doctor": true, "convert": true,
-		"init": true, "plan": true, "help": true,
-		"completion": true,
-	}
-	if builtins[tool] {
+	if isBuiltInTool(rootCmd, tool) {
 		return nil
 	}
 
@@ -104,10 +94,47 @@ func tryExpandAlias(tool string, rest []string, depth int) []string {
 
 	if len(expandedArgs) > 0 {
 		nextTool := strings.ToLower(strings.TrimSpace(expandedArgs[0]))
-		if recursive := tryExpandAlias(nextTool, expandedArgs[1:], depth+1); recursive != nil {
+		if recursive := tryExpandAlias(rootCmd, nextTool, expandedArgs[1:], depth+1); recursive != nil {
 			return recursive
 		}
 	}
 
 	return expandedArgs
+}
+
+func isBuiltInTool(rootCmd *cobra.Command, tool string) bool {
+	if tool == "" {
+		return false
+	}
+	for _, cmd := range rootCmd.Commands() {
+		if strings.EqualFold(cmd.Name(), tool) {
+			return true
+		}
+		if slices.ContainsFunc(cmd.Aliases, func(alias string) bool {
+			return strings.EqualFold(alias, tool)
+		}) {
+			return true
+		}
+	}
+	return strings.EqualFold(tool, "help")
+}
+
+func buildRootLong(rootCmd *cobra.Command) string {
+	lines := []string{
+		"cojira: agent-first Confluence + Jira automation",
+		"",
+		"Usage:",
+		"  cojira <tool> [args]",
+		"",
+		"Tools:",
+	}
+	for _, cmd := range rootCmd.Commands() {
+		if !cmd.IsAvailableCommand() || cmd.Hidden {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("  %-12s %s", cmd.Name(), cmd.Short))
+	}
+	lines = append(lines, "", "Examples:")
+	lines = append(lines, rootExamples...)
+	return strings.Join(lines, "\n")
 }

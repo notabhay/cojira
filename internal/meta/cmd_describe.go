@@ -2,11 +2,11 @@ package meta
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/notabhay/cojira/internal/cli"
+	"github.com/notabhay/cojira/internal/credstore"
 	"github.com/notabhay/cojira/internal/dotenv"
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/notabhay/cojira/internal/version"
@@ -138,25 +138,25 @@ func buildManifest(rootCmd *cobra.Command) map[string]any {
 }
 
 // configuredToolsFromEnv checks which tools have the required env vars set.
-func configuredToolsFromEnv() []string {
+func configuredToolsFromEnv(profileOverrides map[string]string) []string {
 	var tools []string
-	if os.Getenv("JIRA_BASE_URL") != "" && (os.Getenv("JIRA_API_TOKEN") != "" || hasOAuthEnv("JIRA")) {
+	if envWithProfile(profileOverrides, "JIRA_BASE_URL") != "" && (envWithProfile(profileOverrides, "JIRA_API_TOKEN") != "" || hasOAuthEnvWithProfile(profileOverrides, "JIRA")) {
 		tools = append(tools, "jira")
 	}
-	if os.Getenv("CONFLUENCE_BASE_URL") != "" && (os.Getenv("CONFLUENCE_API_TOKEN") != "" || hasOAuthEnv("CONFLUENCE")) {
+	if envWithProfile(profileOverrides, "CONFLUENCE_BASE_URL") != "" && (envWithProfile(profileOverrides, "CONFLUENCE_API_TOKEN") != "" || hasOAuthEnvWithProfile(profileOverrides, "CONFLUENCE")) {
 		tools = append(tools, "confluence")
 	}
 	sort.Strings(tools)
 	return tools
 }
 
-func hasOAuthEnv(prefix string) bool {
-	return strings.TrimSpace(os.Getenv(prefix+"_OAUTH_ACCESS_TOKEN")) != "" ||
-		strings.TrimSpace(os.Getenv(prefix+"_OAUTH_REFRESH_TOKEN")) != ""
+func hasOAuthEnvWithProfile(overrides map[string]string, prefix string) bool {
+	return envWithProfile(overrides, prefix+"_OAUTH_ACCESS_TOKEN") != "" ||
+		envWithProfile(overrides, prefix+"_OAUTH_REFRESH_TOKEN") != ""
 }
 
 // buildContext runs doctor checks and returns context information.
-func buildContext(rootCmd *cobra.Command) map[string]any {
+func buildContext(rootCmd *cobra.Command, profileOverrides map[string]string, profileName string) map[string]any {
 	checks := runDoctorChecks(cli.RetryConfig{
 		Context:        rootCmd.Context(),
 		Timeout:        10.0,
@@ -164,7 +164,7 @@ func buildContext(rootCmd *cobra.Command) map[string]any {
 		RetryBaseDelay: 0.5,
 		RetryMaxDelay:  2.0,
 		Debug:          false,
-	})
+	}, profileOverrides, profileName)
 
 	var checksOut []map[string]any
 	setupNeeded := false
@@ -192,8 +192,9 @@ func buildContext(rootCmd *cobra.Command) map[string]any {
 	return map[string]any{
 		"checks":           checksOut,
 		"setup_needed":     setupNeeded,
-		"configured_tools": configuredToolsFromEnv(),
+		"configured_tools": configuredToolsFromEnv(profileOverrides),
 		"current_user":     currentUser,
+		"credential_store": credstore.EffectiveStoreName(),
 	}
 }
 
@@ -269,7 +270,7 @@ func agentPrompt(manifest map[string]any) string {
 	lines = append(lines, "")
 	lines = append(lines, "Not supported (tell the user clearly if asked):")
 	lines = append(lines, "- Jira: board columns, filters, project admin")
-	lines = append(lines, "- Confluence: templates, PDF export, Word export")
+	lines = append(lines, "- Confluence: advanced space permission administration")
 	lines = append(lines, "")
 	lines = append(lines, "Common workflows:")
 	lines = append(lines, "- Confluence: `cojira confluence info <page> --output-mode json` -> `get` -> edit XHTML -> `update`")
@@ -317,12 +318,19 @@ func identList(identifiers map[string]any, key string) []string {
 func runDescribe(cmd *cobra.Command, rootCmd *cobra.Command) error {
 	dotenv.LoadDefaultOnce()
 	cli.NormalizeOutputMode(cmd)
+	profileOverrides, profileName, err := cli.ProfileEnvOverrides(cmd)
+	if err != nil {
+		return err
+	}
 
 	manifest := buildManifest(rootCmd)
+	if profileName != "" {
+		manifest["profile"] = profileName
+	}
 	withContext, _ := cmd.Flags().GetBool("with-context")
 	var ctx map[string]any
 	if withContext {
-		ctx = buildContext(rootCmd)
+		ctx = buildContext(rootCmd, profileOverrides, profileName)
 		manifest["context"] = ctx
 		configured, _ := ctx["configured_tools"].([]string)
 		if len(configured) > 0 && len(configured) < 2 {

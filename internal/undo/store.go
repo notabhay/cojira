@@ -21,6 +21,8 @@ type IssueEntry struct {
 	Fields     map[string]any `json:"fields,omitempty"`
 	FromStatus string         `json:"from_status,omitempty"`
 	ToStatus   string         `json:"to_status,omitempty"`
+	UndoAction string         `json:"undo_action,omitempty"`
+	Payload    map[string]any `json:"payload,omitempty"`
 }
 
 func storeDir() string {

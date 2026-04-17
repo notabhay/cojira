@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/notabhay/cojira/internal/events"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,53 +18,51 @@ var isoRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z`)
 
 func TestEnvelopeRequiredFields(t *testing.T) {
 	data := BuildEnvelope(true, "jira", "info", nil, map[string]any{"x": 1}, nil, nil, "", "", "", nil)
-	for _, key := range []string{"schema_version", "mode", "ok", "command", "tool", "result", "timestamp", "exit_code"} {
-		_, ok := data[key]
-		assert.True(t, ok, "missing key %q", key)
-	}
+	assert.Equal(t, "1.0", data.SchemaVersion)
+	assert.Equal(t, "jira", data.Tool)
+	assert.Equal(t, "info", data.Command)
+	assert.NotNil(t, data.Result)
+	assert.NotEmpty(t, data.Timestamp)
 }
 
 func TestEnvelopeModeDefault(t *testing.T) {
 	_ = os.Unsetenv("COJIRA_OUTPUT_MODE")
 	SetMode("")
 	data := BuildEnvelope(true, "jira", "info", nil, map[string]any{}, nil, nil, "", "", "", nil)
-	assert.Equal(t, "human", data["mode"])
+	assert.Equal(t, "human", data.Mode)
 }
 
 func TestEnvelopeTimestampFormat(t *testing.T) {
 	data := BuildEnvelope(true, "jira", "info", nil, map[string]any{}, nil, nil, "", "", "", nil)
-	ts, ok := data["timestamp"].(string)
-	require.True(t, ok)
-	assert.Regexp(t, isoRe, ts)
+	assert.Regexp(t, isoRe, data.Timestamp)
 }
 
 func TestEnvelopeWarningsEmptyByDefault(t *testing.T) {
 	data := BuildEnvelope(true, "jira", "info", nil, map[string]any{}, nil, nil, "", "", "", nil)
-	assert.Equal(t, []any{}, data["warnings"])
+	assert.Equal(t, []any{}, data.Warnings)
 }
 
 func TestEnvelopeWarningsPopulated(t *testing.T) {
 	warn := map[string]any{"code": "X", "message": "m"}
 	data := BuildEnvelope(true, "jira", "info", nil, map[string]any{}, []any{warn}, nil, "", "", "", nil)
-	warnings := data["warnings"].([]any)
-	assert.Len(t, warnings, 1)
-	assert.Equal(t, warn, warnings[0])
+	assert.Len(t, data.Warnings, 1)
+	assert.Equal(t, warn, data.Warnings[0])
 }
 
 func TestEnvelopeExitCodeDefaultOK(t *testing.T) {
 	data := BuildEnvelope(true, "jira", "info", nil, nil, nil, nil, "", "", "", nil)
-	assert.Equal(t, 0, data["exit_code"])
+	assert.Equal(t, 0, data.ExitCode)
 }
 
 func TestEnvelopeExitCodeDefaultFail(t *testing.T) {
 	data := BuildEnvelope(false, "jira", "info", nil, nil, nil, nil, "", "", "", nil)
-	assert.Equal(t, 1, data["exit_code"])
+	assert.Equal(t, 1, data.ExitCode)
 }
 
 func TestEnvelopeExitCodeExplicit(t *testing.T) {
 	ec := 2
 	data := BuildEnvelope(false, "jira", "info", nil, nil, nil, nil, "", "", "", &ec)
-	assert.Equal(t, 2, data["exit_code"])
+	assert.Equal(t, 2, data.ExitCode)
 }
 
 // --- PrintJSON tests ---
@@ -89,6 +88,49 @@ func TestPrintJSONOutput(t *testing.T) {
 	errs := parsed["errors"].([]any)
 	errObj := errs[0].(map[string]any)
 	assert.Equal(t, "HTTP_403", errObj["code"])
+}
+
+func TestPrintJSONAppliesSelect(t *testing.T) {
+	SetMode("json")
+	SetSelect("result.value")
+	defer func() {
+		SetMode("")
+		SetSelect("")
+	}()
+
+	data := BuildEnvelope(true, "jira", "info", nil, map[string]any{"value": "picked", "other": "ignored"}, nil, nil, "", "", "", nil)
+	s, err := JSONDumps(data)
+	require.NoError(t, err)
+	assert.Equal(t, "\"picked\"", s)
+}
+
+func TestPrintJSONUsesCompactEncodingForNDJSON(t *testing.T) {
+	SetMode("ndjson")
+	defer SetMode("")
+
+	data := BuildEnvelope(true, "jira", "info", nil, map[string]any{"value": "picked"}, nil, nil, "", "", "", nil)
+	s, err := JSONDumps(data)
+	require.NoError(t, err)
+	assert.NotContains(t, s, "\n  ")
+}
+
+func TestEmitProgressPersistsEventStream(t *testing.T) {
+	t.Setenv("COJIRA_EVENT_DIR", t.TempDir())
+	SetEventStreamID("")
+	defer SetEventStreamID("")
+
+	EmitProgress("summary", false, 1, 3, "PROJ-1", "OK")
+
+	id := CurrentEventStreamID()
+	require.NotEmpty(t, id)
+	lines, err := events.ReadAll(id)
+	require.NoError(t, err)
+	require.Len(t, lines, 1)
+	assert.Contains(t, lines[0], `"type":"progress"`)
+	assert.Contains(t, lines[0], `"PROJ-1"`)
+
+	env := BuildEnvelope(true, "jira", "bulk-update", nil, map[string]any{"ok": true}, nil, nil, "", "", "", nil)
+	assert.Equal(t, id, env.EventStreamID)
 }
 
 // --- NewEnvelope (functional options) tests ---

@@ -20,6 +20,19 @@ detect_arch() {
   esac
 }
 
+sha256_cmd() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "sha256sum"
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "shasum -a 256"
+    return 0
+  fi
+  echo "Missing required checksum command: sha256sum or shasum" >&2
+  exit 1
+}
+
 VERSION="${1:-$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo "v0.3.0")}"
 OS_NAME="${2:-$(detect_os)}"
 ARCH_NAME="${3:-$(detect_arch)}"
@@ -67,10 +80,16 @@ cp "${REPO_ROOT}/.env.example" "${BUNDLE_ROOT}/.env.example"
 cp "${REPO_ROOT}/COJIRA-BOOTSTRAP.md" "${BUNDLE_ROOT}/COJIRA-BOOTSTRAP.md"
 
 OUTPUT_PATH="${REPO_ROOT}/cojira-${VERSION#v}-${OS_NAME}-${ARCH_NAME}.zip"
+CHECKSUM_PATH="${OUTPUT_PATH}.sha256"
 rm -f "${OUTPUT_PATH}"
+rm -f "${CHECKSUM_PATH}"
 (
   cd "$BUNDLE_ROOT"
   zip -qr "$OUTPUT_PATH" .
 )
 
+CHECKSUM_TOOL="$(sha256_cmd)"
+eval "$CHECKSUM_TOOL \"\$OUTPUT_PATH\"" | awk '{print $1}' > "$CHECKSUM_PATH"
+
 printf 'Wrote %s\n' "$OUTPUT_PATH"
+printf 'Wrote %s\n' "$CHECKSUM_PATH"

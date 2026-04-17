@@ -22,6 +22,7 @@ type Envelope struct {
 	OK            bool           `json:"ok"`
 	Tool          string         `json:"tool"`
 	Command       string         `json:"command"`
+	EventStreamID string         `json:"event_stream_id,omitempty"`
 	Target        map[string]any `json:"target"`
 	Result        any            `json:"result"`
 	Warnings      []any          `json:"warnings"`
@@ -105,6 +106,9 @@ func NewEnvelope(opts ...EnvelopeOption) *Envelope {
 	if e.Target == nil {
 		e.Target = map[string]any{}
 	}
+	if e.EventStreamID == "" {
+		e.EventStreamID = CurrentEventStreamID()
+	}
 	if e.Warnings == nil {
 		e.Warnings = []any{}
 	}
@@ -137,7 +141,7 @@ func BuildEnvelope(
 	mode string,
 	schemaVersion string,
 	exitCode *int,
-) map[string]any {
+) *Envelope {
 	if schemaVersion == "" {
 		schemaVersion = "1.0"
 	}
@@ -160,18 +164,19 @@ func BuildEnvelope(
 	if ts == "" {
 		ts = UTCNowISO()
 	}
-	return map[string]any{
-		"schema_version": schemaVersion,
-		"mode":           modeValue,
-		"ok":             ok,
-		"tool":           tool,
-		"command":        command,
-		"target":         target,
-		"result":         result,
-		"warnings":       w,
-		"errors":         e,
-		"timestamp":      ts,
-		"exit_code":      ec,
+	return &Envelope{
+		SchemaVersion: schemaVersion,
+		Mode:          modeValue,
+		OK:            ok,
+		Tool:          tool,
+		Command:       command,
+		EventStreamID: CurrentEventStreamID(),
+		Target:        target,
+		Result:        result,
+		Warnings:      w,
+		Errors:        e,
+		Timestamp:     ts,
+		ExitCode:      ec,
 	}
 }
 

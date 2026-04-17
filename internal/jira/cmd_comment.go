@@ -161,6 +161,9 @@ func runAddComment(cmd *cobra.Command, client *Client, issueID string, bodyValue
 	if err != nil {
 		return err
 	}
+	recordUndoAction("", issueID, "jira.comment.add", "comment.delete", map[string]any{
+		"comment_id": normalizeMaybeString(comment["id"]),
+	})
 
 	if idemKey != "" {
 		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.comment %s", issueID))
@@ -206,11 +209,19 @@ func runEditComment(cmd *cobra.Command, client *Client, issueID, commentID strin
 		fmt.Printf("Skipped duplicate comment edit for %s.\n", issueID)
 		return nil
 	}
+	existing, err := findCommentByID(client, issueID, commentID)
+	if err != nil {
+		return err
+	}
 
 	comment, err := client.UpdateComment(issueID, commentID, bodyValue)
 	if err != nil {
 		return err
 	}
+	recordUndoAction("", issueID, "jira.comment.edit", "comment.update", map[string]any{
+		"comment_id": commentID,
+		"body":       existing["body"],
+	})
 
 	if idemKey != "" {
 		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.comment edit %s %s", issueID, commentID))
@@ -249,10 +260,17 @@ func runDeleteComment(cmd *cobra.Command, client *Client, issueID, commentID str
 		fmt.Printf("Skipped duplicate comment delete for %s.\n", issueID)
 		return nil
 	}
+	existing, err := findCommentByID(client, issueID, commentID)
+	if err != nil {
+		return err
+	}
 
 	if err := client.DeleteComment(issueID, commentID); err != nil {
 		return err
 	}
+	recordUndoAction("", issueID, "jira.comment.delete", "comment.add", map[string]any{
+		"body": existing["body"],
+	})
 
 	if idemKey != "" {
 		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.comment delete %s %s", issueID, commentID))
@@ -267,6 +285,34 @@ func runDeleteComment(cmd *cobra.Command, client *Client, issueID, commentID str
 	}
 	fmt.Printf("Deleted comment %s on %s.\n", commentID, issueID)
 	return nil
+}
+
+func findCommentByID(client *Client, issueID, commentID string) (map[string]any, error) {
+	offset := 0
+	pageSize := 50
+	for {
+		data, err := client.ListComments(issueID, pageSize, offset)
+		if err != nil {
+			return nil, err
+		}
+		raw, _ := data["comments"].([]any)
+		items := coerceJSONArray(raw)
+		for _, item := range items {
+			if normalizeMaybeString(item["id"]) == commentID {
+				return item, nil
+			}
+		}
+		offset += len(items)
+		total := intFromAny(data["total"], len(items))
+		if len(items) == 0 || offset >= total {
+			break
+		}
+	}
+	return nil, &cerrors.CojiraError{
+		Code:     cerrors.IdentUnresolved,
+		Message:  fmt.Sprintf("Comment %s was not found on %s.", commentID, issueID),
+		ExitCode: 1,
+	}
 }
 
 func runListComments(cmd *cobra.Command, client *Client, issueID string, all bool, limit, start, pageSize int, mode string) error {

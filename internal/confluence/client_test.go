@@ -433,6 +433,26 @@ func TestUploadAttachment(t *testing.T) {
 	assert.NotNil(t, result["results"])
 }
 
+func TestUploadAttachmentBytes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/content/12345/child/attachment", r.URL.Path)
+		assert.Equal(t, "nocheck", r.Header.Get("X-Atlassian-Token"))
+		assert.Contains(t, r.Header.Get("Content-Type"), "multipart/form-data")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{
+				{"id": "10", "title": "stdin.txt"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.UploadAttachmentBytes("12345", "stdin.txt", []byte("hello"))
+	require.NoError(t, err)
+	assert.NotNil(t, result["results"])
+}
+
 func TestDownloadAttachment(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/download/attachments/12345/spec.pdf", r.URL.Path)
@@ -446,6 +466,47 @@ func TestDownloadAttachment(t *testing.T) {
 	data, err := os.ReadFile(outPath)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(data))
+}
+
+func TestDownloadAttachmentContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/download/attachments/12345/spec.pdf", r.URL.Path)
+		_, _ = io.WriteString(w, "hello")
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	data, err := c.DownloadAttachmentContent("/download/attachments/12345/spec.pdf")
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(data))
+}
+
+func TestDeleteAttachment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/content/9", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeleteAttachment("9"))
+}
+
+func TestDownloadPageExportPDF(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/spaces/flyingpdf/pdfpageexport.action", r.URL.Path)
+		assert.Equal(t, "12345", r.URL.Query().Get("pageId"))
+		w.Header().Set("Content-Disposition", `attachment; filename="page.pdf"`)
+		_, _ = io.WriteString(w, "pdf-bytes")
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	data, filename, err := c.DownloadPageExport("12345", "pdf")
+	require.NoError(t, err)
+	assert.Equal(t, "page.pdf", filename)
+	assert.Equal(t, "pdf-bytes", string(data))
 }
 
 func TestListPageComments(t *testing.T) {
@@ -477,6 +538,137 @@ func TestAddPageComment(t *testing.T) {
 	result, err := c.AddPageComment("12345", "<p>hello</p>")
 	require.NoError(t, err)
 	assert.Equal(t, "200", result["id"])
+}
+
+func TestUpdatePageComment(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch callCount {
+		case 1:
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/rest/api/content/200", r.URL.Path)
+			assert.Equal(t, "version,container", r.URL.Query().Get("expand"))
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":   "200",
+				"type": "comment",
+				"version": map[string]any{
+					"number": 2,
+				},
+				"container": map[string]any{
+					"type": "page",
+					"id":   "12345",
+				},
+			})
+		case 2:
+			assert.Equal(t, "PUT", r.Method)
+			assert.Equal(t, "/rest/api/content/200", r.URL.Path)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "200"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.UpdatePageComment("200", "<p>updated</p>")
+	require.NoError(t, err)
+	assert.Equal(t, "200", result["id"])
+}
+
+func TestDeletePageComment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/content/200", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeletePageComment("200"))
+}
+
+func TestListInlineComments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v2/pages/12345/inline-comments", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{"id": "99"}},
+		})
+	}))
+	defer server.Close()
+
+	c, err := NewClient(ClientConfig{
+		BaseURL:     server.URL,
+		APIVersion:  "2",
+		Token:       "fake-token",
+		UserAgent:   "test/0.1",
+		Timeout:     5 * time.Second,
+		RetryConfig: noRetryConfig(),
+		CacheConfig: httpclient.CacheConfig{Disabled: true},
+	})
+	require.NoError(t, err)
+	result, err := c.ListInlineComments("12345", 25, "", "storage")
+	require.NoError(t, err)
+	assert.NotNil(t, result["results"])
+}
+
+func TestCreateInlineComment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/api/v2/inline-comments", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "99"})
+	}))
+	defer server.Close()
+
+	c, err := NewClient(ClientConfig{
+		BaseURL:     server.URL,
+		APIVersion:  "2",
+		Token:       "fake-token",
+		UserAgent:   "test/0.1",
+		Timeout:     5 * time.Second,
+		RetryConfig: noRetryConfig(),
+		CacheConfig: httpclient.CacheConfig{Disabled: true},
+	})
+	require.NoError(t, err)
+	result, err := c.CreateInlineComment(map[string]any{"pageId": "12345"})
+	require.NoError(t, err)
+	assert.Equal(t, "99", result["id"])
+}
+
+func TestListPageProperties(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v2/pages/12345/properties", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{{"id": "1", "key": "foo"}}})
+	}))
+	defer server.Close()
+
+	c, err := NewClient(ClientConfig{
+		BaseURL:     server.URL,
+		APIVersion:  "2",
+		Token:       "fake-token",
+		UserAgent:   "test/0.1",
+		Timeout:     5 * time.Second,
+		RetryConfig: noRetryConfig(),
+		CacheConfig: httpclient.CacheConfig{Disabled: true},
+	})
+	require.NoError(t, err)
+	result, err := c.ListPageProperties("12345", 25)
+	require.NoError(t, err)
+	assert.NotNil(t, result["results"])
+}
+
+func TestRestoreTrashedContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/content/12345/version", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"restored": true})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.RestoreTrashedContent("12345", 3, "restore", true)
+	require.NoError(t, err)
+	assert.Equal(t, true, result["restored"])
 }
 
 func TestDeleteContent(t *testing.T) {
@@ -563,6 +755,87 @@ func TestListSpaces(t *testing.T) {
 	result, err := c.ListSpaces(25, 0)
 	require.NoError(t, err)
 	assert.NotNil(t, result["results"])
+}
+
+func TestGetSpace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/rest/api/space/TEAM", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"key": "TEAM", "name": "Team Space"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetSpace("TEAM")
+	require.NoError(t, err)
+	assert.Equal(t, "TEAM", result["key"])
+}
+
+func TestCreateSpace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/space", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"key": "TEAM", "name": "Team Space"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.CreateSpace(map[string]any{"key": "TEAM", "name": "Team Space"})
+	require.NoError(t, err)
+	assert.Equal(t, "TEAM", result["key"])
+}
+
+func TestUpdateSpace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PUT", r.Method)
+		assert.Equal(t, "/rest/api/space/TEAM", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"key": "TEAM", "name": "Updated Space"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.UpdateSpace("TEAM", map[string]any{"key": "TEAM", "name": "Updated Space"})
+	require.NoError(t, err)
+	assert.Equal(t, "Updated Space", result["name"])
+}
+
+func TestDeleteSpace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/rest/api/space/TEAM", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.DeleteSpace("TEAM"))
+}
+
+func TestListTemplates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/template/page", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"results": []map[string]any{{"templateId": "1"}}})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListTemplates("", 25, 0)
+	require.NoError(t, err)
+	assert.NotNil(t, result["results"])
+}
+
+func TestCreateTemplate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/template", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"templateId": "1"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.CreateTemplate(map[string]any{"name": "Test"})
+	require.NoError(t, err)
+	assert.Equal(t, "1", result["templateId"])
 }
 
 func TestMovePage(t *testing.T) {

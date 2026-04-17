@@ -20,6 +20,31 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
 }
 
+sha256_cmd() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "sha256sum"
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "shasum -a 256"
+    return 0
+  fi
+  die "Missing required checksum command: sha256sum or shasum"
+}
+
+verify_sha256_file() {
+  local file_path="$1"
+  local expected_file="$2"
+  local checksum_tool
+  checksum_tool="$(sha256_cmd)"
+
+  local expected actual
+  expected="$(tr -d ' \n\r' < "$expected_file")"
+  [ -n "$expected" ] || die "Empty checksum file: ${expected_file}"
+  actual="$(eval "$checksum_tool \"\$file_path\"" | awk '{print $1}')"
+  [ "$actual" = "$expected" ] || die "Checksum verification failed for ${file_path}"
+}
+
 script_dir() {
   local src
   src="${BASH_SOURCE[0]}"
@@ -186,7 +211,10 @@ ensure_go() {
   mkdir -p "$go_install_dir"
 
   local tarball="${tmpdir}/${filename}"
+  local checksum_file="${tmpdir}/${filename}.sha256"
   curl -fsSL --retry 3 --retry-delay 1 -o "$tarball" "$url" || die "Failed to download Go toolchain"
+  curl -fsSL --retry 3 --retry-delay 1 -o "$checksum_file" "${url}.sha256" || die "Failed to download Go toolchain checksum"
+  verify_sha256_file "$tarball" "$checksum_file"
 
   rm -rf "${go_install_dir}/go" 2>/dev/null || true
   tar -xzf "$tarball" -C "$go_install_dir" || die "Failed to extract Go toolchain"

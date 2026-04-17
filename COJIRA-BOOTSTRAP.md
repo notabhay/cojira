@@ -212,14 +212,15 @@ Before executing a dangerous action:
 - Jira issue reads/search/update/create/clone/transition/comment/attachment/link/watcher/worklog/delete/batch/bulk sync flows
 - Jira history, diff, dashboards, board listing, board view rendering, saved queries, offline search, polling, graph analysis, git helpers, and board or sprint reports
 - Jira sprint analytics including velocity, burndown, cycle-time, blocker-aging, and workload reports
+- Jira custom-field resolution, field-value inspection, recorded dry-runs, later `apply`, structured event tails, cache inspection, and Jira Service Management reads
 - experimental Jira board swimlane and detail-view configuration
 - Confluence page reads/search/tree/create/update/rename/move/archive/copy-tree/batch
-- Confluence comments, attachments, blog posts, history, diff, restore, and restrictions
+- Confluence comments, inline comments, attachments, blog posts, history, diff, restore, restrictions, macros, page properties, templates, trash flows, watch flows, and markdown export
 
 It does **not** support:
 
 - Jira project-administration workflows
-- Confluence templates or export to PDF/Word
+- Confluence advanced space permission administration
 
 ### Workspace cleanup
 

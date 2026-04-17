@@ -58,6 +58,19 @@ jobs:
         with:
           version: latest
 
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Run govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
   fuzz-smoke:
     runs-on: ubuntu-latest
     steps:

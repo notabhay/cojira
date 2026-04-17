@@ -50,12 +50,19 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	recordSearchRecents(client, issues, "search")
+	nextStartAt := 0
+	if !fetchAll && start+len(issues) < total {
+		nextStartAt = start + len(issues)
+	}
 	data := map[string]any{
-		"issues":      issues,
-		"total":       total,
-		"startAt":     start,
-		"maxResults":  limit,
-		"fetched_all": fetchAll,
+		"issues":        issues,
+		"total":         total,
+		"count":         len(issues),
+		"startAt":       start,
+		"page_size":     limit,
+		"maxResults":    limit,
+		"fetched_all":   fetchAll,
+		"next_start_at": nextStartAt,
 	}
 
 	if outputFile != "" {

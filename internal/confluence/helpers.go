@@ -58,6 +58,29 @@ func convertStorageBody(bodyText, format string) (string, error) {
 	}
 }
 
+func renderPageBody(bodyText, format string) (string, []string, error) {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "storage", "storage-xhtml", "xhtml", "raw":
+		return bodyText, nil, nil
+	case "markdown", "md":
+		rendered, warnings, err := storageToMarkdown(bodyText)
+		if err != nil {
+			return "", nil, &cerrors.CojiraError{
+				Code:     cerrors.OpFailed,
+				Message:  fmt.Sprintf("Failed to convert storage body to Markdown: %v", err),
+				ExitCode: 1,
+			}
+		}
+		return rendered, warnings, nil
+	default:
+		return "", nil, &cerrors.CojiraError{
+			Code:     cerrors.OpFailed,
+			Message:  fmt.Sprintf("Unsupported output format %q. Use storage or markdown.", format),
+			ExitCode: 2,
+		}
+	}
+}
+
 // readJSONFile reads and parses a JSON file, returning a map.
 func readJSONFile(path string) (map[string]any, error) {
 	info, err := os.Stat(path)

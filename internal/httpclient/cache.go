@@ -19,17 +19,42 @@ const cacheHeaderName = "X-Cojira-Cache"
 
 // CacheConfig controls the shared on-disk HTTP response cache.
 type CacheConfig struct {
-	Disabled bool
-	TTL      time.Duration
-	Dir      string
+	Disabled   bool
+	TTL        time.Duration
+	Dir        string
 	MaxEntries int
 }
 
 type cacheEntry struct {
+	Method       string      `json:"method,omitempty"`
+	RequestURL   string      `json:"request_url,omitempty"`
+	VaryKey      string      `json:"vary_key,omitempty"`
 	StatusCode   int         `json:"status_code"`
 	Header       http.Header `json:"header"`
 	Body         []byte      `json:"body"`
 	StoredAtUnix int64       `json:"stored_at_unix"`
+}
+
+// CacheEntryInfo is a user-facing cache metadata record.
+type CacheEntryInfo struct {
+	Path         string `json:"path"`
+	Method       string `json:"method"`
+	RequestURL   string `json:"request_url"`
+	VaryKey      string `json:"vary_key"`
+	StatusCode   int    `json:"status_code"`
+	BodyBytes    int    `json:"body_bytes"`
+	StoredAtUnix int64  `json:"stored_at_unix"`
+}
+
+// CacheStats reports aggregate cache state.
+type CacheStats struct {
+	Dir           string   `json:"dir"`
+	Entries       int      `json:"entries"`
+	Bytes         int64    `json:"bytes"`
+	UniqueVaryKey int      `json:"unique_vary_keys"`
+	OldestUnix    int64    `json:"oldest_unix"`
+	NewestUnix    int64    `json:"newest_unix"`
+	Paths         []string `json:"paths,omitempty"`
 }
 
 // DefaultCacheConfig returns the standard cache settings for read requests.
@@ -125,6 +150,109 @@ func writeCacheEntry(path string, entry cacheEntry) error {
 	return os.Rename(tmpPath, path)
 }
 
+func cacheEntryMatches(entry *cacheEntry, varyKey string) bool {
+	if entry == nil {
+		return false
+	}
+	if strings.TrimSpace(varyKey) == "" {
+		return true
+	}
+	return strings.TrimSpace(entry.VaryKey) == strings.TrimSpace(varyKey)
+}
+
+func cacheEntryInfo(path string, entry *cacheEntry) CacheEntryInfo {
+	if entry == nil {
+		return CacheEntryInfo{Path: path}
+	}
+	return CacheEntryInfo{
+		Path:         path,
+		Method:       entry.Method,
+		RequestURL:   entry.RequestURL,
+		VaryKey:      entry.VaryKey,
+		StatusCode:   entry.StatusCode,
+		BodyBytes:    len(entry.Body),
+		StoredAtUnix: entry.StoredAtUnix,
+	}
+}
+
+func listCacheEntries(cfg CacheConfig, varyKey string) ([]CacheEntryInfo, error) {
+	cfg = normalizeCacheConfig(cfg)
+	paths, err := filepath.Glob(filepath.Join(cfg.Dir, "*.json"))
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]CacheEntryInfo, 0, len(paths))
+	for _, path := range paths {
+		entry, err := readCacheEntry(path)
+		if err != nil {
+			continue
+		}
+		if !cacheEntryMatches(entry, varyKey) {
+			continue
+		}
+		entries = append(entries, cacheEntryInfo(path, entry))
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].StoredAtUnix == entries[j].StoredAtUnix {
+			return entries[i].Path < entries[j].Path
+		}
+		return entries[i].StoredAtUnix > entries[j].StoredAtUnix
+	})
+	return entries, nil
+}
+
+// InspectCache returns metadata for cache entries matching the optional varyKey.
+func InspectCache(cfg CacheConfig, varyKey string) ([]CacheEntryInfo, error) {
+	return listCacheEntries(cfg, varyKey)
+}
+
+// CacheStatistics returns aggregate cache stats for entries matching the optional varyKey.
+func CacheStatistics(cfg CacheConfig, varyKey string) (CacheStats, error) {
+	entries, err := listCacheEntries(cfg, varyKey)
+	if err != nil {
+		return CacheStats{}, err
+	}
+	stats := CacheStats{Dir: normalizeCacheConfig(cfg).Dir, Entries: len(entries)}
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		stats.Bytes += int64(entry.BodyBytes)
+		if entry.VaryKey != "" {
+			seen[entry.VaryKey] = true
+		}
+		if stats.OldestUnix == 0 || entry.StoredAtUnix < stats.OldestUnix {
+			stats.OldestUnix = entry.StoredAtUnix
+		}
+		if entry.StoredAtUnix > stats.NewestUnix {
+			stats.NewestUnix = entry.StoredAtUnix
+		}
+		stats.Paths = append(stats.Paths, entry.Path)
+	}
+	stats.UniqueVaryKey = len(seen)
+	return stats, nil
+}
+
+// ClearCache removes cache entries matching the optional varyKey.
+func ClearCache(cfg CacheConfig, varyKey string) (int, error) {
+	entries, err := listCacheEntries(cfg, varyKey)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, entry := range entries {
+		if err := os.Remove(entry.Path); err == nil || os.IsNotExist(err) {
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+func invalidateVaryKey(cfg CacheConfig, varyKey string) {
+	if strings.TrimSpace(varyKey) == "" {
+		return
+	}
+	_, _ = ClearCache(cfg, varyKey)
+}
+
 func pruneCacheEntries(dir string, ttl time.Duration, maxEntries int) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	if err != nil || len(paths) == 0 {
@@ -186,7 +314,7 @@ func shouldStoreResponse(resp *http.Response) bool {
 	return resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
-func responseToCacheEntry(resp *http.Response) (cacheEntry, error) {
+func responseToCacheEntry(resp *http.Response, method, requestURL, varyKey string) (cacheEntry, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return cacheEntry{}, err
@@ -194,6 +322,9 @@ func responseToCacheEntry(resp *http.Response) (cacheEntry, error) {
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	return cacheEntry{
+		Method:       strings.ToUpper(strings.TrimSpace(method)),
+		RequestURL:   requestURL,
+		VaryKey:      varyKey,
 		StatusCode:   resp.StatusCode,
 		Header:       cloneHeader(resp.Header),
 		Body:         body,
@@ -215,6 +346,9 @@ func RequestWithCache(method, requestURL, varyKey string, cfg CacheConfig, reque
 	cfg = normalizeCacheConfig(cfg)
 	if cfg.Disabled || !isCacheableMethod(method) {
 		resp, err := requestFn(nil)
+		if err == nil && resp != nil && !isCacheableMethod(method) && resp.StatusCode >= 200 && resp.StatusCode < 400 {
+			invalidateVaryKey(cfg, varyKey)
+		}
 		if resp != nil {
 			resp.Header.Set(cacheHeaderName, "bypass")
 		}
@@ -255,7 +389,7 @@ func RequestWithCache(method, requestURL, varyKey string, cfg CacheConfig, reque
 	}
 
 	if shouldStoreResponse(resp) {
-		entry, cacheErr := responseToCacheEntry(resp)
+		entry, cacheErr := responseToCacheEntry(resp, method, requestURL, varyKey)
 		if cacheErr == nil {
 			_ = writeCacheEntry(path, entry)
 			pruneCacheEntries(cfg.Dir, cfg.TTL, cfg.MaxEntries)

@@ -22,7 +22,7 @@ func TestBuildCreatePayloadFromInlineFlags(t *testing.T) {
 	require.NoError(t, cmd.Flags().Set("components", "API"))
 	require.NoError(t, cmd.Flags().Set("assignee", "me"))
 
-	payload, err := buildCreatePayload(cmd, "")
+	payload, err := buildCreatePayload(cmd, "", nil)
 	require.NoError(t, err)
 
 	fields := payload["fields"].(map[string]any)
@@ -41,7 +41,7 @@ func TestBuildCreatePayloadDefaultsProjectAndType(t *testing.T) {
 	cmd := NewCreateCmd()
 	require.NoError(t, cmd.Flags().Set("summary", "Create from defaults"))
 
-	payload, err := buildCreatePayload(cmd, "")
+	payload, err := buildCreatePayload(cmd, "", nil)
 	require.NoError(t, err)
 
 	fields := payload["fields"].(map[string]any)
@@ -59,7 +59,7 @@ func TestBuildCreatePayloadMergesFileAndFlags(t *testing.T) {
 	require.NoError(t, cmd.Flags().Set("summary", "New summary"))
 	require.NoError(t, cmd.Flags().Set("set", "labels+=fresh"))
 
-	payload, err := buildCreatePayload(cmd, payloadPath)
+	payload, err := buildCreatePayload(cmd, payloadPath, nil)
 	require.NoError(t, err)
 
 	fields := payload["fields"].(map[string]any)
@@ -76,7 +76,7 @@ func TestBuildCreatePayloadConvertsDescriptionToADFOnV3(t *testing.T) {
 	require.NoError(t, cmd.Flags().Set("summary", "ADF issue"))
 	require.NoError(t, cmd.Flags().Set("description", "Hello world"))
 
-	payload, err := buildCreatePayload(cmd, "")
+	payload, err := buildCreatePayload(cmd, "", nil)
 	require.NoError(t, err)
 
 	fields := payload["fields"].(map[string]any)
@@ -88,7 +88,7 @@ func TestBuildCreatePayloadRequiresSummaryForFlagMode(t *testing.T) {
 	cmd := NewCreateCmd()
 	require.NoError(t, cmd.Flags().Set("project", "RAPTOR"))
 
-	_, err := buildCreatePayload(cmd, "")
+	_, err := buildCreatePayload(cmd, "", nil)
 	require.Error(t, err)
 }
 
@@ -111,7 +111,7 @@ func TestApplyCreateFlagsRejectsDescriptionConflicts(t *testing.T) {
 	require.NoError(t, cmd.Flags().Set("description", "inline"))
 	require.NoError(t, cmd.Flags().Set("description-file", "desc.txt"))
 
-	_, err := applyCreateFlags(cmd, map[string]any{})
+	_, err := applyCreateFlags(cmd, map[string]any{}, nil)
 	require.Error(t, err)
 }
 

@@ -16,22 +16,34 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func envWithProfile(cmd *cobra.Command, overrides map[string]string, key string) string {
+	if value := strings.TrimSpace(overrides[key]); value != "" {
+		return value
+	}
+	return strings.TrimSpace(os.Getenv(key))
+}
+
 // clientFromCmd creates a Jira Client from the cobra command's environment.
 func clientFromCmd(cmd *cobra.Command) (*Client, error) {
-	baseURL := strings.TrimSpace(os.Getenv("JIRA_BASE_URL"))
-	token := strings.TrimSpace(os.Getenv("JIRA_API_TOKEN"))
-	email := strings.TrimSpace(os.Getenv("JIRA_EMAIL"))
+	overrides, profileName, err := cli.ProfileEnvOverrides(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	baseURL := envWithProfile(cmd, overrides, "JIRA_BASE_URL")
+	token := envWithProfile(cmd, overrides, "JIRA_API_TOKEN")
+	email := envWithProfile(cmd, overrides, "JIRA_EMAIL")
 	if dotenv.IsPlaceholder(email, "email") {
 		email = ""
 	}
-	apiVersion := strings.TrimSpace(os.Getenv("JIRA_API_VERSION"))
+	apiVersion := envWithProfile(cmd, overrides, "JIRA_API_VERSION")
 	if apiVersion == "" {
 		apiVersion = DefaultAPIVersion
 	}
-	authMode := strings.TrimSpace(os.Getenv("JIRA_AUTH_MODE"))
+	authMode := envWithProfile(cmd, overrides, "JIRA_AUTH_MODE")
 	apiBaseURL := ""
 	if strings.EqualFold(authMode, "oauth2") {
-		resolved, err := oauth.ResolveAtlassianOAuth2(cmd.Context(), "jira", baseURL, "JIRA")
+		resolved, err := oauth.ResolveAtlassianOAuth2WithOverrides(cmd.Context(), "jira", baseURL, "JIRA", overrides)
 		if err != nil {
 			return nil, err
 		}
@@ -39,7 +51,7 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 		email = ""
 		apiBaseURL = resolved.APIBaseURL
 	}
-	verifySSLStr := strings.TrimSpace(os.Getenv("JIRA_VERIFY_SSL"))
+	verifySSLStr := envWithProfile(cmd, overrides, "JIRA_VERIFY_SSL")
 	verifySSL := true
 	if verifySSLStr != "" {
 		switch strings.ToLower(verifySSLStr) {
@@ -47,9 +59,12 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 			verifySSL = false
 		}
 	}
-	userAgent := strings.TrimSpace(os.Getenv("JIRA_USER_AGENT"))
+	userAgent := envWithProfile(cmd, overrides, "JIRA_USER_AGENT")
 	if userAgent == "" {
 		userAgent = defaultUserAgent()
+	}
+	if profileName != "" {
+		userAgent = userAgent + " profile/" + profileName
 	}
 
 	rc := cli.BuildRetryConfig(cmd)
@@ -75,6 +90,8 @@ func clientFromCmd(cmd *cobra.Command) (*Client, error) {
 			JitterRatio:       0.1,
 			RespectRetryAfter: true,
 			RetryExceptions:   true,
+			ClientRateLimit:   rc.ClientRateLimit,
+			ClientBurst:       rc.ClientBurst,
 			RetryStatuses:     map[int]bool{429: true, 500: true, 502: true, 503: true, 504: true},
 		},
 		CacheConfig: httpclient.CacheConfig{

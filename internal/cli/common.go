@@ -5,8 +5,10 @@ package cli
 import (
 	"context"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/notabhay/cojira/internal/config"
 	"github.com/notabhay/cojira/internal/output"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -18,7 +20,7 @@ func AddOutputFlags(cmd *cobra.Command, includeQuiet bool) {
 	if defaultMode == "" {
 		defaultMode = "human"
 	}
-	cmd.Flags().String("output-mode", defaultMode, "Output mode: human, json, summary, auto (default: human)")
+	cmd.Flags().String("output-mode", defaultMode, "Output mode: human, json, ndjson, summary, auto (default: human)")
 	defaultColor := os.Getenv("COJIRA_COLOR")
 	if defaultColor == "" {
 		defaultColor = "auto"
@@ -55,6 +57,8 @@ func addHTTPRetryFlags(flags *pflag.FlagSet) {
 	flags.Int("retries", 5, "HTTP retries for 429/5xx (default: 5)")
 	flags.Float64("retry-base-delay", 0.5, "Base delay for exponential backoff in seconds (default: 0.5)")
 	flags.Float64("retry-max-delay", 8.0, "Max delay between retries in seconds (default: 8.0)")
+	flags.Float64("client-rate-limit", 0.0, "Proactive client-side request rate limit in requests/sec (0 disables)")
+	flags.Int("client-burst", 4, "Client-side burst size when --client-rate-limit is enabled")
 	flags.Bool("debug", false, "Enable debug logging to stderr")
 }
 
@@ -73,6 +77,10 @@ func AddIdempotencyFlags(cmd *cobra.Command) {
 // and returns the resolved mode string.
 func NormalizeOutputMode(cmd *cobra.Command) string {
 	mode, _ := cmd.Flags().GetString("output-mode")
+	stream, _ := cmd.Flags().GetBool("stream")
+	if stream {
+		mode = "ndjson"
+	}
 	if mode == "auto" {
 		if output.IsTTY(int(os.Stdout.Fd())) {
 			mode = "human"
@@ -80,7 +88,7 @@ func NormalizeOutputMode(cmd *cobra.Command) string {
 			mode = "json"
 		}
 	}
-	if mode != "human" && mode != "json" && mode != "summary" {
+	if mode != "human" && mode != "json" && mode != "ndjson" && mode != "summary" {
 		mode = "human"
 	}
 	output.SetMode(mode)
@@ -91,13 +99,16 @@ func NormalizeOutputMode(cmd *cobra.Command) string {
 	default:
 		output.SetColorMode("auto")
 	}
+	selectExpr, _ := cmd.Flags().GetString("select")
+	output.SetSelect(strings.TrimSpace(selectExpr))
 	return mode
 }
 
 // IsJSON returns true if the resolved output mode is "json".
 func IsJSON(cmd *cobra.Command) bool {
 	mode, _ := cmd.Flags().GetString("output-mode")
-	return mode == "json"
+	stream, _ := cmd.Flags().GetBool("stream")
+	return mode == "json" || mode == "ndjson" || stream
 }
 
 // IsSummary returns true if the resolved output mode is "summary".
@@ -124,14 +135,36 @@ func ApplyPlanFlag(cmd *cobra.Command) {
 // This is a local definition; the httpclient package may define its own
 // once it's ported and this can be unified.
 type RetryConfig struct {
-	Context        context.Context
-	Timeout        float64
-	Retries        int
-	RetryBaseDelay float64
-	RetryMaxDelay  float64
-	Debug          bool
-	NoCache        bool
-	CacheTTL       time.Duration
+	Context         context.Context
+	Timeout         float64
+	Retries         int
+	RetryBaseDelay  float64
+	RetryMaxDelay   float64
+	Debug           bool
+	NoCache         bool
+	CacheTTL        time.Duration
+	ClientRateLimit float64
+	ClientBurst     int
+}
+
+// SelectedProfile resolves the profile from --profile, COJIRA_PROFILE, or the
+// project config default_profile value.
+func SelectedProfile(cmd *cobra.Command) (string, error) {
+	requested := ""
+	if cmd != nil {
+		requested, _ = cmd.Flags().GetString("profile")
+	}
+	return config.ResolveProfileName(requested)
+}
+
+// ProfileEnvOverrides resolves the effective profile override map for the
+// current command.
+func ProfileEnvOverrides(cmd *cobra.Command) (map[string]string, string, error) {
+	requested := ""
+	if cmd != nil {
+		requested, _ = cmd.Flags().GetString("profile")
+	}
+	return config.ProfileEnvOverrides(requested)
 }
 
 // BuildRetryConfig reads retry-related flags from cmd and returns a RetryConfig.
@@ -143,14 +176,18 @@ func BuildRetryConfig(cmd *cobra.Command) RetryConfig {
 	debug, _ := cmd.Flags().GetBool("debug")
 	noCache, _ := cmd.Flags().GetBool("no-cache")
 	cacheTTL, _ := cmd.Flags().GetDuration("cache-ttl")
+	clientRateLimit, _ := cmd.Flags().GetFloat64("client-rate-limit")
+	clientBurst, _ := cmd.Flags().GetInt("client-burst")
 	return RetryConfig{
-		Context:        cmd.Context(),
-		Timeout:        timeout,
-		Retries:        retries,
-		RetryBaseDelay: baseDelay,
-		RetryMaxDelay:  maxDelay,
-		Debug:          debug,
-		NoCache:        noCache,
-		CacheTTL:       cacheTTL,
+		Context:         cmd.Context(),
+		Timeout:         timeout,
+		Retries:         retries,
+		RetryBaseDelay:  baseDelay,
+		RetryMaxDelay:   maxDelay,
+		Debug:           debug,
+		NoCache:         noCache,
+		CacheTTL:        cacheTTL,
+		ClientRateLimit: clientRateLimit,
+		ClientBurst:     clientBurst,
 	}
 }

@@ -33,3 +33,13 @@ func TestIssueProjectAndType(t *testing.T) {
 	assert.Equal(t, "RAPTOR", project)
 	assert.Equal(t, "3", issueType)
 }
+
+func TestCoerceAllowedValueEnums(t *testing.T) {
+	values := coerceAllowedValueEnums([]any{
+		map[string]any{"name": "High"},
+		map[string]any{"value": "Medium", "name": "Medium"},
+		map[string]any{"id": "1", "displayName": "Low"},
+	})
+
+	assert.Equal(t, []string{"High", "Medium", "Low"}, values)
+}

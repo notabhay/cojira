@@ -3,7 +3,9 @@ package httpclient
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,4 +310,22 @@ func TestRequestWithRetryStopsDuringBackoffSleepWhenCanceled(t *testing.T) {
 
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, 1, callCount)
+}
+
+func TestRequestWithRetryURLAppliesClientRateLimit(t *testing.T) {
+	sleepCalls := 0
+	cfg := DefaultRetryConfig()
+	cfg.ClientRateLimit = 2
+	cfg.ClientBurst = 1
+	cfg.Sleep = func(d time.Duration) { sleepCalls++ }
+
+	requestFn := func() (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(""))}, nil
+	}
+
+	_, err := RequestWithRetryURL("https://example.com/rest/api/2/issue/PROJ-1", requestFn, cfg, nil)
+	require.NoError(t, err)
+	_, err = RequestWithRetryURL("https://example.com/rest/api/2/issue/PROJ-2", requestFn, cfg, nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, sleepCalls, 1)
 }

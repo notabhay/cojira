@@ -271,6 +271,9 @@ func runBatch(cmd *cobra.Command, args []string) error {
 			}
 			failureCount++
 			failures = append(failures, failureEntry{key: stringOr(desc, opType), err: opErr.Error()})
+			output.EmitError(cerrors.OpFailed, fmt.Sprintf("%s: %s", stringOr(desc, opType), opErr.Error()), map[string]any{
+				"operation": "batch",
+			})
 		} else {
 			item["ok"] = true
 			if childKey != "" {
@@ -450,6 +453,9 @@ func runBatch(cmd *cobra.Command, args []string) error {
 			case result.failure != nil:
 				failureCount++
 				failures = append(failures, *result.failure)
+				output.EmitError(cerrors.OpFailed, fmt.Sprintf("%s: %s", result.failure.key, result.failure.err), map[string]any{
+					"operation": "batch",
+				})
 			case result.success:
 				successCount++
 			}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -280,7 +281,7 @@ func (c *Client) requestWithURL(method, requestURL string, body []byte, params u
 	}
 
 	resp, err := httpclient.RequestWithCache(method, finalURL, c.cacheVaryKey, c.cacheConfig, func(extraHeaders http.Header) (*http.Response, error) {
-		return httpclient.RequestWithRetry(func() (*http.Response, error) {
+		return httpclient.RequestWithRetryURL(finalURL, func() (*http.Response, error) {
 			return requestFn(extraHeaders)
 		}, cfg, c.onRetry)
 	})
@@ -361,7 +362,7 @@ func (c *Client) requestWithExtraHeaders(method, requestURL string, body []byte,
 		return c.doRequestWithHeaders(method, finalURL, body, extraHeaders)
 	}
 
-	resp, err := httpclient.RequestWithRetry(requestFn, cfg, c.onRetry)
+	resp, err := httpclient.RequestWithRetryURL(finalURL, requestFn, cfg, c.onRetry)
 	if err != nil {
 		if c.logger != nil {
 			c.logger.Debug("http.error",
@@ -446,6 +447,23 @@ func (c *Client) GetPageByID(pageID string, expand string) (map[string]any, erro
 	return decodeJSON(resp)
 }
 
+// GetContentByStatus fetches content with a given status such as current or trashed.
+func (c *Client) GetContentByStatus(contentID, status, expand string) (map[string]any, error) {
+	params := url.Values{}
+	if strings.TrimSpace(status) != "" {
+		params.Set("status", status)
+	}
+	if expand != "" {
+		params.Set("expand", expand)
+	}
+	resp, err := c.requestV1("GET", "/content/"+contentID, nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
 // GetPageVersion fetches a historical version of a Confluence page.
 func (c *Client) GetPageVersion(pageID string, version int, expand string) (map[string]any, error) {
 	params := url.Values{}
@@ -521,6 +539,28 @@ func (c *Client) ListBlogPosts(spaceKey string, limit, start int) (map[string]an
 	if strings.TrimSpace(spaceKey) != "" {
 		params.Set("spaceKey", spaceKey)
 	}
+	resp, err := c.requestV1("GET", "/content", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ListContent lists content with optional status and space filters.
+func (c *Client) ListContent(contentType, spaceKey, status string, limit, start int) (map[string]any, error) {
+	params := url.Values{}
+	if strings.TrimSpace(contentType) != "" {
+		params.Set("type", contentType)
+	}
+	if strings.TrimSpace(spaceKey) != "" {
+		params.Set("spaceKey", spaceKey)
+	}
+	if strings.TrimSpace(status) != "" {
+		params.Set("status", status)
+	}
+	params.Set("limit", fmt.Sprintf("%d", limit))
+	params.Set("start", fmt.Sprintf("%d", start))
 	resp, err := c.requestV1("GET", "/content", nil, params)
 	if err != nil {
 		return nil, err
@@ -681,14 +721,22 @@ func (c *Client) UploadAttachment(pageID, filePath string) (map[string]any, erro
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
+	return c.uploadAttachmentReader(pageID, filepath.Base(filePath), file)
+}
 
+// UploadAttachmentBytes uploads in-memory attachment bytes to a page.
+func (c *Client) UploadAttachmentBytes(pageID, filename string, data []byte) (map[string]any, error) {
+	return c.uploadAttachmentReader(pageID, filename, bytes.NewReader(data))
+}
+
+func (c *Client) uploadAttachmentReader(pageID, filename string, reader io.Reader) (map[string]any, error) {
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+	part, err := writer.CreateFormFile("file", filepath.Base(filename))
 	if err != nil {
 		return nil, err
 	}
-	if _, err := io.Copy(part, file); err != nil {
+	if _, err := io.Copy(part, reader); err != nil {
 		return nil, err
 	}
 	if err := writer.Close(); err != nil {
@@ -735,6 +783,47 @@ func (c *Client) DownloadAttachment(downloadURL, outputPath string) error {
 	return err
 }
 
+// DownloadAttachmentContent fetches attachment bytes for hashing or sync logic.
+func (c *Client) DownloadAttachmentContent(downloadURL string) ([]byte, error) {
+	if strings.HasPrefix(downloadURL, "/") {
+		downloadURL = c.baseURL + downloadURL
+	}
+	resp, err := c.requestWithExtraHeaders("GET", downloadURL, nil, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return io.ReadAll(resp.Body)
+}
+
+// DownloadPageExport downloads a page export in a document format such as pdf or word.
+func (c *Client) DownloadPageExport(pageID, format string) ([]byte, string, error) {
+	var exportURL string
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "pdf":
+		exportURL = c.baseURL + "/spaces/flyingpdf/pdfpageexport.action?pageId=" + url.QueryEscape(pageID)
+	case "word", "doc", "docx":
+		exportURL = c.baseURL + "/exportword?pageId=" + url.QueryEscape(pageID)
+	default:
+		return nil, "", fmt.Errorf("unsupported export format: %s", format)
+	}
+	resp, err := c.requestWithExtraHeaders("GET", exportURL, nil, nil, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, filenameFromDisposition(resp.Header.Get("Content-Disposition")), nil
+}
+
+// DeleteAttachment removes an attachment by content id.
+func (c *Client) DeleteAttachment(attachmentID string) error {
+	return c.DeleteContent(attachmentID)
+}
+
 // ListPageComments fetches comments on a page.
 func (c *Client) ListPageComments(pageID string, limit, start int) (map[string]any, error) {
 	params := url.Values{}
@@ -766,6 +855,179 @@ func (c *Client) AddPageComment(pageID, bodyText string) (map[string]any, error)
 	return c.CreatePage(payload)
 }
 
+// GetContentByID fetches a Confluence content record by id using the v1 API.
+func (c *Client) GetContentByID(contentID string, expand string) (map[string]any, error) {
+	params := url.Values{}
+	if expand != "" {
+		params.Set("expand", expand)
+	}
+	resp, err := c.requestV1("GET", "/content/"+contentID, nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// UpdatePageComment updates an existing storage-format page comment.
+func (c *Client) UpdatePageComment(commentID, bodyText string) (map[string]any, error) {
+	comment, err := c.GetContentByID(commentID, "version,container")
+	if err != nil {
+		return nil, err
+	}
+	versionNum := intFromAny(getNestedMapValue(comment, "version", "number"), 0)
+	payload := map[string]any{
+		"id":   commentID,
+		"type": "comment",
+		"version": map[string]any{
+			"number": versionNum + 1,
+		},
+		"container": comment["container"],
+		"body": map[string]any{
+			"storage": map[string]any{
+				"value":          bodyText,
+				"representation": "storage",
+			},
+		},
+	}
+	return c.UpdatePage(commentID, payload)
+}
+
+// DeletePageComment deletes a page comment by content id.
+func (c *Client) DeletePageComment(commentID string) error {
+	return c.DeleteContent(commentID)
+}
+
+// ListInlineComments lists inline comments for a page.
+func (c *Client) ListInlineComments(pageID string, limit int, cursor string, bodyFormat string) (map[string]any, error) {
+	params := url.Values{}
+	if limit > 0 {
+		params.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if strings.TrimSpace(cursor) != "" {
+		params.Set("cursor", cursor)
+	}
+	if strings.TrimSpace(bodyFormat) != "" {
+		params.Set("body-format", bodyFormat)
+	}
+	resp, err := c.requestV2("GET", "/pages/"+pageID+"/inline-comments", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// ListPageProperties lists content properties for a page.
+func (c *Client) ListPageProperties(pageID string, limit int) (map[string]any, error) {
+	params := url.Values{}
+	if limit > 0 {
+		params.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	resp, err := c.requestV2("GET", "/pages/"+pageID+"/properties", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// GetPageProperty fetches a page content property by id.
+func (c *Client) GetPageProperty(pageID, propertyID string) (map[string]any, error) {
+	resp, err := c.requestV2("GET", "/pages/"+pageID+"/properties/"+propertyID, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// CreatePageProperty creates a page content property.
+func (c *Client) CreatePageProperty(pageID string, payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestV2("POST", "/pages/"+pageID+"/properties", body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// UpdatePageProperty updates a page content property.
+func (c *Client) UpdatePageProperty(pageID, propertyID string, payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestV2("PUT", "/pages/"+pageID+"/properties/"+propertyID, body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// DeletePageProperty deletes a page content property.
+func (c *Client) DeletePageProperty(pageID, propertyID string) error {
+	resp, err := c.requestV2("DELETE", "/pages/"+pageID+"/properties/"+propertyID, nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// GetInlineComment fetches an inline comment by id.
+func (c *Client) GetInlineComment(commentID string) (map[string]any, error) {
+	resp, err := c.requestV2("GET", "/inline-comments/"+commentID, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// CreateInlineComment creates an inline comment.
+func (c *Client) CreateInlineComment(payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestV2("POST", "/inline-comments", body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// UpdateInlineComment updates an inline comment.
+func (c *Client) UpdateInlineComment(commentID string, payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestV2("PUT", "/inline-comments/"+commentID, body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// DeleteInlineComment deletes an inline comment permanently.
+func (c *Client) DeleteInlineComment(commentID string) error {
+	resp, err := c.requestV2("DELETE", "/inline-comments/"+commentID, nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // DeleteContent deletes a page or comment by content ID.
 func (c *Client) DeleteContent(contentID string) error {
 	if c.apiVersion == "2" {
@@ -781,6 +1043,41 @@ func (c *Client) DeleteContent(contentID string) error {
 	}
 	_ = resp.Body.Close()
 	return nil
+}
+
+// ListContentVersions lists historical versions for a content item.
+func (c *Client) ListContentVersions(contentID string, limit, start int) (map[string]any, error) {
+	params := url.Values{}
+	params.Set("limit", fmt.Sprintf("%d", limit))
+	params.Set("start", fmt.Sprintf("%d", start))
+	resp, err := c.requestV1("GET", "/content/"+contentID+"/version", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// RestoreTrashedContent restores a trashed content item to current status.
+func (c *Client) RestoreTrashedContent(contentID string, versionNumber int, message string, restoreTitle bool) (map[string]any, error) {
+	payload := map[string]any{
+		"operationKey": "restore",
+		"params": map[string]any{
+			"versionNumber": versionNumber,
+			"message":       message,
+			"restoreTitle":  restoreTitle,
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestV1("POST", "/content/"+contentID+"/version", body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
 }
 
 // GetChildren fetches child pages for a given page ID (fully paginated).
@@ -865,6 +1162,122 @@ func (c *Client) ListSpaces(limit, start int) (map[string]any, error) {
 	return decodeJSON(resp)
 }
 
+// GetSpace fetches a Confluence space by key.
+func (c *Client) GetSpace(spaceKey string) (map[string]any, error) {
+	resp, err := c.requestV1("GET", "/space/"+url.PathEscape(spaceKey), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// CreateSpace creates a Confluence space.
+func (c *Client) CreateSpace(payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestV1("POST", "/space", body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// UpdateSpace updates a Confluence space by key.
+func (c *Client) UpdateSpace(spaceKey string, payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestV1("PUT", "/space/"+url.PathEscape(spaceKey), body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// DeleteSpace deletes a Confluence space by key.
+func (c *Client) DeleteSpace(spaceKey string) error {
+	resp, err := c.requestV1("DELETE", "/space/"+url.PathEscape(spaceKey), nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// ListTemplates lists content templates, optionally scoped to a space.
+func (c *Client) ListTemplates(spaceKey string, limit, start int) (map[string]any, error) {
+	params := url.Values{}
+	if strings.TrimSpace(spaceKey) != "" {
+		params.Set("spaceKey", spaceKey)
+	}
+	if limit > 0 {
+		params.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	if start > 0 {
+		params.Set("start", fmt.Sprintf("%d", start))
+	}
+	resp, err := c.requestV1("GET", "/template/page", nil, params)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// GetTemplate fetches a content template by id.
+func (c *Client) GetTemplate(templateID string) (map[string]any, error) {
+	resp, err := c.requestV1("GET", "/template/"+url.PathEscape(templateID), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// CreateTemplate creates a content template.
+func (c *Client) CreateTemplate(payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestV1("POST", "/template", body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// UpdateTemplate updates a content template.
+func (c *Client) UpdateTemplate(payload map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestV1("PUT", "/template", body, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return decodeJSON(resp)
+}
+
+// DeleteTemplate removes a template by id.
+func (c *Client) DeleteTemplate(templateID string) error {
+	resp, err := c.requestV1("DELETE", "/template/"+url.PathEscape(templateID), nil, nil)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // MovePage moves a Confluence page under a new parent.
 func (c *Client) MovePage(pageID, targetParentID string) (map[string]any, error) {
 	page, err := c.GetPageByID(pageID, "version,body.storage")
@@ -913,6 +1326,29 @@ func (c *Client) getSpaceIDByKey(spaceKey string) (string, error) {
 		return "", err
 	}
 	return normalizeMaybeString(data["id"]), nil
+}
+
+func getNestedMapValue(m map[string]any, keys ...string) any {
+	var cur any = m
+	for _, key := range keys {
+		next, ok := cur.(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = next[key]
+	}
+	return cur
+}
+
+func filenameFromDisposition(headerValue string) string {
+	if strings.TrimSpace(headerValue) == "" {
+		return ""
+	}
+	_, params, err := mime.ParseMediaType(headerValue)
+	if err != nil {
+		return ""
+	}
+	return params["filename"]
 }
 
 func (c *Client) translateV1PageCreateToV2(payload map[string]any) (map[string]any, error) {

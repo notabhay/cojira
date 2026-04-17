@@ -106,10 +106,16 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	if descFlag != "" {
 		fields["description"] = descFlag
 	}
+	resolver := newIssueFieldResolver(client, issueID)
+	fields, err = resolveFieldMapKeys(fields, resolver)
+	if err != nil {
+		return err
+	}
 
 	// Parse --set expressions.
 	type setOp struct {
 		field, op, value string
+		entry            map[string]any
 	}
 	var setOps []setOp
 	for _, expr := range setExprs {
@@ -117,7 +123,11 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		setOps = append(setOps, setOp{f, o, v})
+		resolvedField, err := resolver.ResolveWithEntry(f)
+		if err != nil {
+			return err
+		}
+		setOps = append(setOps, setOp{resolvedField.ID, o, v, resolvedField.Entry})
 	}
 
 	// Determine referenced fields for pre-fetch.
@@ -165,7 +175,7 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 
 	// Apply --set expressions.
 	for _, s := range setOps {
-		if err := applySetOp(s.field, s.op, s.value, fields, mergedFieldState(currentFields, fields)); err != nil {
+		if err := applyResolvedSetOp(s.field, s.op, s.value, s.entry, fields, mergedFieldState(currentFields, fields)); err != nil {
 			return err
 		}
 	}

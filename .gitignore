@@ -33,3 +33,6 @@ Thumbs.db
 # Build
 dist/
 build/
+packaging/generated/
+cojira-*.zip
+cojira-*.sha256

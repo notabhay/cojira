@@ -8,9 +8,10 @@ import (
 )
 
 var (
-	modeMu    sync.RWMutex
-	mode      string // empty means "not set"
-	colorMode string // empty means "not set"
+	modeMu     sync.RWMutex
+	mode       string // empty means "not set"
+	colorMode  string // empty means "not set"
+	selectExpr string
 )
 
 // SetMode sets the global output mode (e.g. "human", "json", "summary").
@@ -25,6 +26,13 @@ func SetMode(m string) {
 func SetColorMode(m string) {
 	modeMu.Lock()
 	colorMode = m
+	modeMu.Unlock()
+}
+
+// SetSelect sets the global client-side selection expression.
+func SetSelect(expr string) {
+	modeMu.Lock()
+	selectExpr = expr
 	modeMu.Unlock()
 }
 
@@ -55,6 +63,14 @@ func GetColorMode() string {
 		return env
 	}
 	return "auto"
+}
+
+// GetSelect returns the global client-side selection expression.
+func GetSelect() string {
+	modeMu.RLock()
+	expr := selectExpr
+	modeMu.RUnlock()
+	return expr
 }
 
 // ShouldColorize returns true when human output should use ANSI colors.

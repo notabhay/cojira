@@ -18,6 +18,7 @@ func NewFieldValuesCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE:  runFieldValues,
 	}
+	cmd.Flags().String("format", "detailed", "Output format: detailed or enum")
 	cli.AddOutputFlags(cmd, true)
 	return cmd
 }
@@ -30,9 +31,25 @@ func runFieldValues(cmd *cobra.Command, args []string) error {
 	}
 	issueID := ResolveIssueIdentifier(args[0])
 	fieldName := strings.TrimSpace(args[1])
+	format, _ := cmd.Flags().GetString("format")
 	fieldID, entry, source, err := resolveFieldValueMetadata(client, issueID, fieldName)
 	if err != nil {
 		return err
+	}
+
+	enumValues := coerceAllowedValueEnums(entry["allowedValues"])
+	if strings.EqualFold(strings.TrimSpace(format), "enum") {
+		if mode == "json" || mode == "ndjson" {
+			return output.PrintJSON(output.BuildEnvelope(true, "jira", "field-values", map[string]any{"issue": issueID, "field": fieldName, "format": "enum"}, enumValues, nil, nil, "", "", "", nil))
+		}
+		if mode == "summary" {
+			fmt.Printf("Field %s has %d allowed value(s) for %s.\n", fieldID, len(enumValues), issueID)
+			return nil
+		}
+		for _, item := range enumValues {
+			fmt.Println(item)
+		}
+		return nil
 	}
 
 	result := map[string]any{
@@ -173,4 +190,20 @@ func coerceAllowedValues(raw any) []map[string]any {
 		})
 	}
 	return result
+}
+
+func coerceAllowedValueEnums(raw any) []string {
+	items := coerceAllowedValues(raw)
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		value := normalizeMaybeString(item["value"])
+		if value == "" {
+			value = normalizeMaybeString(item["label"])
+		}
+		if value == "" {
+			continue
+		}
+		values = append(values, value)
+	}
+	return values
 }

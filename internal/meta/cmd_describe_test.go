@@ -163,17 +163,17 @@ func TestConfiguredToolsFromEnv(t *testing.T) {
 	t.Setenv("JIRA_API_TOKEN", "")
 	t.Setenv("CONFLUENCE_BASE_URL", "")
 	t.Setenv("CONFLUENCE_API_TOKEN", "")
-	assert.Empty(t, configuredToolsFromEnv())
+	assert.Empty(t, configuredToolsFromEnv(nil))
 
 	// Set Jira only.
 	t.Setenv("JIRA_BASE_URL", "https://jira.example.com")
 	t.Setenv("JIRA_API_TOKEN", "token")
-	tools := configuredToolsFromEnv()
+	tools := configuredToolsFromEnv(nil)
 	assert.Equal(t, []string{"jira"}, tools)
 
 	// Set both.
 	t.Setenv("CONFLUENCE_BASE_URL", "https://confluence.example.com")
 	t.Setenv("CONFLUENCE_API_TOKEN", "token")
-	tools = configuredToolsFromEnv()
+	tools = configuredToolsFromEnv(nil)
 	assert.Equal(t, []string{"confluence", "jira"}, tools)
 }

@@ -18,7 +18,7 @@ func TestCheckJiraMissingEnv(t *testing.T) {
 		t.Setenv(k, "")
 	}
 
-	result := checkJira(defaultRetryConfig())
+	result := checkJira(defaultRetryConfig(), nil, "")
 	assert.False(t, result.OK)
 	assert.Equal(t, "jira", result.Name)
 	assert.NotNil(t, result.Error)
@@ -35,7 +35,7 @@ func TestCheckConfluenceMissingEnv(t *testing.T) {
 	t.Setenv("CONFLUENCE_BASE_URL", "")
 	t.Setenv("CONFLUENCE_API_TOKEN", "")
 
-	result := checkConfluence(defaultRetryConfig())
+	result := checkConfluence(defaultRetryConfig(), nil, "")
 	assert.False(t, result.OK)
 	assert.Equal(t, "confluence", result.Name)
 	assert.NotNil(t, result.Error)
@@ -146,6 +146,29 @@ func TestFixWithoutInteractiveJSONExits3(t *testing.T) {
 			assert.Equal(t, false, payload["ok"])
 		}
 	}
+}
+
+func TestDoctorCIRejectsInteractiveFlags(t *testing.T) {
+	cmd := NewDoctorCmd()
+	cmd.SetArgs([]string{"--ci", "--fix", "--output-mode", "json"})
+	err := cmd.Execute()
+	assert.Error(t, err)
+	exitErr, ok := err.(*exitError)
+	assert.True(t, ok)
+	assert.Equal(t, 2, exitErr.Code)
+}
+
+func TestDoctorSummaryCounts(t *testing.T) {
+	summary := doctorSummary([]CheckResult{
+		{OK: true, Name: "jira"},
+		{OK: false, Name: "confluence"},
+	}, false, 1, true)
+	assert.Equal(t, false, summary["ready"])
+	assert.Equal(t, true, summary["ci"])
+	assert.Equal(t, 2, summary["total_checks"])
+	assert.Equal(t, 1, summary["ok_checks"])
+	assert.Equal(t, 1, summary["failed_checks"])
+	assert.Equal(t, 1, summary["warning_checks"])
 }
 
 func TestToBool(t *testing.T) {

@@ -89,6 +89,9 @@ func TestRequestWithCacheRevalidatesStaleEntry(t *testing.T) {
 	path := cachePath(cfg.Dir, http.MethodGet, url, varyKey)
 	entry, err := readCacheEntry(path)
 	require.NoError(t, err)
+	assert.Equal(t, http.MethodGet, entry.Method)
+	assert.Equal(t, url, entry.RequestURL)
+	assert.Equal(t, varyKey, entry.VaryKey)
 	entry.StoredAtUnix = time.Now().Add(-2 * time.Hour).Unix()
 	require.NoError(t, writeCacheEntry(path, *entry))
 
@@ -101,6 +104,49 @@ func TestRequestWithCacheRevalidatesStaleEntry(t *testing.T) {
 	assert.Equal(t, 2, callCount)
 	assert.Equal(t, `{"value":"cached"}`, string(body2))
 	assert.Equal(t, "revalidated", resp2.Header.Get(cacheHeaderName))
+}
+
+func TestRequestWithCacheInvalidatesVaryKeyOnWrite(t *testing.T) {
+	cfg := CacheConfig{
+		TTL: time.Hour,
+		Dir: t.TempDir(),
+	}
+	url := "https://example.com/rest/api/2/issue/PROJ-1"
+	varyKey := "user-d"
+
+	getFn := func(extraHeaders http.Header) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+		}, nil
+	}
+	resp, err := RequestWithCache(http.MethodGet, url, varyKey, cfg, getFn)
+	require.NoError(t, err)
+	_, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	entries, err := InspectCache(cfg, varyKey)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	writeFn := func(extraHeaders http.Header) (*http.Response, error) {
+		require.Nil(t, extraHeaders)
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     http.Header{},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	}
+	resp, err = RequestWithCache(http.MethodPost, url, varyKey, cfg, writeFn)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, "bypass", resp.Header.Get(cacheHeaderName))
+
+	entries, err = InspectCache(cfg, varyKey)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }
 
 func TestRequestWithCacheBypassWhenDisabled(t *testing.T) {
@@ -130,4 +176,43 @@ func TestRequestWithCacheBypassWhenDisabled(t *testing.T) {
 	}
 
 	assert.Equal(t, 2, callCount)
+}
+
+func TestInspectCacheStatsAndClear(t *testing.T) {
+	cfg := CacheConfig{
+		TTL: time.Hour,
+		Dir: t.TempDir(),
+	}
+	for i, varyKey := range []string{"user-a", "user-b"} {
+		resp, err := RequestWithCache(http.MethodGet, "https://example.com/rest/api/2/issue/PROJ-"+string(rune('1'+i)), varyKey, cfg, func(extraHeaders http.Header) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+			}, nil
+		})
+		require.NoError(t, err)
+		_, err = io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
+	}
+
+	entries, err := InspectCache(cfg, "")
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+
+	stats, err := CacheStatistics(cfg, "")
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.Entries)
+	assert.Equal(t, 2, stats.UniqueVaryKey)
+	assert.Greater(t, stats.Bytes, int64(0))
+
+	removed, err := ClearCache(cfg, "user-a")
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+
+	entries, err = InspectCache(cfg, "")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "user-b", entries[0].VaryKey)
 }

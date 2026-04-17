@@ -265,6 +265,11 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 				skipped++
 			case result.failure != nil:
 				failures = append(failures, *result.failure)
+				output.EmitError(cerrors.OpFailed, fmt.Sprintf("%s: %s", result.failure.key, result.failure.err), map[string]any{
+					"operation": "bulk-transition",
+					"jql":       jql,
+					"to":        toFlag,
+				})
 			case result.success:
 				success++
 			}
@@ -418,6 +423,11 @@ func runBulkTransition(cmd *cobra.Command, _ []string) error {
 					_, _ = fmt.Fprintln(cmd.ErrOrStderr(), r.Format())
 				}
 				failures = append(failures, failureEntry{key: key, err: opErr.Error()})
+				output.EmitError(cerrors.OpFailed, fmt.Sprintf("%s: %s", key, opErr.Error()), map[string]any{
+					"operation": "bulk-transition",
+					"jql":       jql,
+					"to":        toFlag,
+				})
 			}
 
 			items = append(items, item)

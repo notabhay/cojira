@@ -7,7 +7,7 @@ class Cojira < Formula
   depends_on "go" => :build
 
   def install
-    system "go", "build", *std_go_args(ldflags: "-s -w -X github.com/notabhay/cojira/internal/version.Version=#{version}")
+    system "go", "build", "-trimpath", *std_go_args(ldflags: "-s -w -X github.com/notabhay/cojira/internal/version.Version=#{version}")
   end
 
   test do

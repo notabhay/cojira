@@ -24,7 +24,7 @@ func TestBuildClonePayloadCopiesSourceFields(t *testing.T) {
 		},
 	}
 
-	payload, summary, project, err := buildClonePayload(cmd, source)
+	payload, summary, project, err := buildClonePayload(cmd, nil, source)
 	require.NoError(t, err)
 
 	fields := payload["fields"].(map[string]any)
@@ -54,7 +54,7 @@ func TestBuildClonePayloadAppliesOverrides(t *testing.T) {
 		},
 	}
 
-	payload, summary, project, err := buildClonePayload(cmd, source)
+	payload, summary, project, err := buildClonePayload(cmd, nil, source)
 	require.NoError(t, err)
 
 	fields := payload["fields"].(map[string]any)
@@ -78,7 +78,7 @@ func TestBuildClonePayloadDropsParentAcrossProjects(t *testing.T) {
 		},
 	}
 
-	payload, _, _, err := buildClonePayload(cmd, source)
+	payload, _, _, err := buildClonePayload(cmd, nil, source)
 	require.NoError(t, err)
 
 	fields := payload["fields"].(map[string]any)

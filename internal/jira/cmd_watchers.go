@@ -134,6 +134,14 @@ func runWatchers(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	undoAction := "watcher.remove"
+	if action == "remove" {
+		undoAction = "watcher.add"
+	}
+	recordUndoAction("", issueID, "jira.watchers."+action, undoAction, map[string]any{
+		"param_key": removeKey,
+		"value":     watcherValue,
+	})
 
 	if idemKey != "" {
 		_ = idempotency.Record(idemKey, fmt.Sprintf("jira.watchers %s %s", action, issueID))

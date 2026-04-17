@@ -44,6 +44,19 @@ func recordUndoEntry(groupID, issueID, operation string, fields map[string]any, 
 	})
 }
 
+func recordUndoAction(groupID, issueID, operation, action string, payload map[string]any) {
+	if groupID == "" {
+		groupID = undo.NewGroupID(operation)
+	}
+	_ = undo.RecordIssue(undo.IssueEntry{
+		GroupID:    groupID,
+		Issue:      issueID,
+		Operation:  operation,
+		UndoAction: action,
+		Payload:    cloneAnyMap(payload),
+	})
+}
+
 func cloneUndoValue(value any) any {
 	data, err := json.Marshal(value)
 	if err != nil {

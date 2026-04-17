@@ -40,16 +40,22 @@ type refreshedToken struct {
 // variables and optionally discovers the Atlassian Cloud resource to use for
 // API proxy requests.
 func ResolveAtlassianOAuth2(ctx context.Context, product, baseURL, prefix string) (*ResolvedAuth, error) {
-	accessToken := firstEnv(prefix+"_OAUTH_ACCESS_TOKEN", "ATLASSIAN_OAUTH_ACCESS_TOKEN")
-	refreshToken := firstEnv(prefix+"_OAUTH_REFRESH_TOKEN", "ATLASSIAN_OAUTH_REFRESH_TOKEN")
-	clientID := firstEnv(prefix+"_OAUTH_CLIENT_ID", "ATLASSIAN_OAUTH_CLIENT_ID")
-	clientSecret := firstEnv(prefix+"_OAUTH_CLIENT_SECRET", "ATLASSIAN_OAUTH_CLIENT_SECRET")
-	tokenURL := firstEnv(prefix+"_OAUTH_TOKEN_URL", "ATLASSIAN_OAUTH_TOKEN_URL")
+	return ResolveAtlassianOAuth2WithOverrides(ctx, product, baseURL, prefix, nil)
+}
+
+// ResolveAtlassianOAuth2WithOverrides resolves OAuth settings using explicit
+// override values before falling back to environment variables.
+func ResolveAtlassianOAuth2WithOverrides(ctx context.Context, product, baseURL, prefix string, overrides map[string]string) (*ResolvedAuth, error) {
+	accessToken := firstEnvWithOverrides(overrides, prefix+"_OAUTH_ACCESS_TOKEN", "ATLASSIAN_OAUTH_ACCESS_TOKEN")
+	refreshToken := firstEnvWithOverrides(overrides, prefix+"_OAUTH_REFRESH_TOKEN", "ATLASSIAN_OAUTH_REFRESH_TOKEN")
+	clientID := firstEnvWithOverrides(overrides, prefix+"_OAUTH_CLIENT_ID", "ATLASSIAN_OAUTH_CLIENT_ID")
+	clientSecret := firstEnvWithOverrides(overrides, prefix+"_OAUTH_CLIENT_SECRET", "ATLASSIAN_OAUTH_CLIENT_SECRET")
+	tokenURL := firstEnvWithOverrides(overrides, prefix+"_OAUTH_TOKEN_URL", "ATLASSIAN_OAUTH_TOKEN_URL")
 	if tokenURL == "" {
 		tokenURL = defaultAtlassianTokenURL
 	}
-	cloudID := firstEnv(prefix+"_OAUTH_CLOUD_ID", "ATLASSIAN_OAUTH_CLOUD_ID")
-	expiry := parseExpiry(firstEnv(prefix+"_OAUTH_EXPIRY", "ATLASSIAN_OAUTH_EXPIRY"))
+	cloudID := firstEnvWithOverrides(overrides, prefix+"_OAUTH_CLOUD_ID", "ATLASSIAN_OAUTH_CLOUD_ID")
+	expiry := parseExpiry(firstEnvWithOverrides(overrides, prefix+"_OAUTH_EXPIRY", "ATLASSIAN_OAUTH_EXPIRY"))
 
 	if strings.TrimSpace(accessToken) == "" && strings.TrimSpace(refreshToken) == "" {
 		return nil, &cerrors.CojiraError{
@@ -100,6 +106,20 @@ func ResolveAtlassianOAuth2(ctx context.Context, product, baseURL, prefix string
 		resolved.APIBaseURL = atlassianAPIBase(product, resolved.CloudID)
 	}
 	return resolved, nil
+}
+
+func firstEnvWithOverrides(overrides map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if overrides != nil {
+			if value := strings.TrimSpace(overrides[key]); value != "" {
+				return value
+			}
+		}
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func refreshedExpiry(expiresIn int) time.Time {

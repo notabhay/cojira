@@ -14,11 +14,12 @@ import (
 func NewGetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "get <page>",
-		Short: "Download page content (storage format XHTML)",
+		Short: "Download page content",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runGet,
 	}
 	cmd.Flags().StringP("output", "o", "", "Output file (default: stdout)")
+	cmd.Flags().String("format", "storage", "Output format: storage or markdown")
 	cli.AddOutputFlags(cmd, true)
 	cli.AddHTTPRetryFlags(cmd)
 	return cmd
@@ -49,7 +50,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	page, err := client.GetPageByID(pageID, "body.storage")
+	page, err := client.GetPageByID(pageID, "title,body.storage")
 	if err != nil {
 		if mode == "json" {
 			errObj, _ := output.ErrorObj(cerrors.FetchFailed, err.Error(), "", "", nil)
@@ -64,40 +65,69 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	content := getNestedString(page, "body", "storage", "value")
+	format, _ := cmd.Flags().GetString("format")
+	rendered, warnings, err := renderPageBody(content, format)
+	if err != nil {
+		return err
+	}
 	outputFile, _ := cmd.Flags().GetString("output")
 
 	if outputFile != "" {
-		if err := writeFile(outputFile, content); err != nil {
+		if err := writeFile(outputFile, rendered); err != nil {
 			return err
 		}
+		jsonWarnings := warningValues(warnings)
 		if mode == "json" {
 			return output.PrintJSON(output.BuildEnvelope(
 				true, "confluence", "get",
 				map[string]any{"page": pageArg, "page_id": pageID},
-				map[string]any{"saved_to": outputFile},
-				nil, nil, "", "", "", nil,
+				map[string]any{"saved_to": outputFile, "format": format},
+				jsonWarnings, nil, "", "", "", nil,
 			))
 		}
 		if mode == "summary" {
 			fmt.Printf("Saved page %s to %s.\n", pageID, outputFile)
 			return nil
 		}
-		fmt.Printf("Saved storage format to: %s\n", outputFile)
+		fmt.Printf("Saved %s format to: %s\n", format, outputFile)
+		printWarnings(cmd, warnings)
 		return nil
 	}
 
 	if mode == "json" {
+		jsonWarnings := warningValues(warnings)
 		return output.PrintJSON(output.BuildEnvelope(
 			true, "confluence", "get",
 			map[string]any{"page": pageArg, "page_id": pageID},
-			map[string]any{"content": content},
-			nil, nil, "", "", "", nil,
+			map[string]any{"content": rendered, "format": format},
+			jsonWarnings, nil, "", "", "", nil,
 		))
 	}
 	if mode == "summary" {
-		fmt.Printf("Fetched page %s (content omitted in summary mode).\n", pageID)
+		fmt.Printf("Fetched page %s as %s (content omitted in summary mode).\n", pageID, format)
 		return nil
 	}
-	fmt.Println(content)
+	fmt.Println(rendered)
+	printWarnings(cmd, warnings)
 	return nil
+}
+
+func printWarnings(cmd *cobra.Command, warnings []string) {
+	if len(warnings) == 0 {
+		return
+	}
+	for _, warning := range warnings {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s\n", warning)
+	}
+}
+
+func warningValues(values []string) []any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	return out
 }

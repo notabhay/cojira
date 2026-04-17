@@ -9,6 +9,7 @@ import (
 
 	"github.com/notabhay/cojira/internal/cli"
 	"github.com/notabhay/cojira/internal/confluence"
+	"github.com/notabhay/cojira/internal/credstore"
 	"github.com/notabhay/cojira/internal/dotenv"
 	cerrors "github.com/notabhay/cojira/internal/errors"
 	"github.com/notabhay/cojira/internal/httpclient"
@@ -40,6 +41,7 @@ func NewDoctorCmd() *cobra.Command {
 	}
 	cli.AddHTTPRetryFlags(cmd)
 	cli.AddOutputFlags(cmd, false)
+	cmd.Flags().Bool("ci", false, "Emit CI-friendly status and reject interactive doctor flows")
 	cmd.Flags().Bool("fix", false, "Attempt to fix missing env vars by writing a credentials file")
 	cmd.Flags().Bool("interactive", false, "Allow prompts for --fix")
 	return cmd
@@ -49,11 +51,33 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	dotenv.LoadDefaultOnce()
 	cli.NormalizeOutputMode(cmd)
 	jsonOut := cli.IsJSON(cmd)
+	profileOverrides, profileName, err := cli.ProfileEnvOverrides(cmd)
+	if err != nil {
+		return err
+	}
 
 	fix, _ := cmd.Flags().GetBool("fix")
 	interactive, _ := cmd.Flags().GetBool("interactive")
+	ciMode, _ := cmd.Flags().GetBool("ci")
 
 	var fixResult map[string]any
+
+	if ciMode && (fix || interactive) {
+		if jsonOut {
+			errObj, _ := output.ErrorObj(cerrors.OpFailed,
+				"--ci cannot be combined with --fix or --interactive.", "", "", nil)
+			ec := 2
+			env := output.BuildEnvelope(
+				false, "cojira", "doctor",
+				map[string]any{"ci": true}, nil,
+				nil, []any{errObj}, "", "", "", &ec,
+			)
+			_ = output.PrintJSON(env)
+			return &exitError{Code: 2}
+		}
+		fmt.Fprintln(os.Stderr, "Error: --ci cannot be combined with --fix or --interactive.")
+		return &exitError{Code: 2}
+	}
 
 	if fix {
 		if !interactive {
@@ -94,14 +118,18 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	}
 
 	rc := cli.BuildRetryConfig(cmd)
-	results := runDoctorChecks(rc)
+	results := runDoctorChecks(rc, profileOverrides, profileName)
 	ok := true
+	warningCount := 0
 	for _, r := range results {
 		if !r.OK {
 			ok = false
-			break
+		}
+		if r.Warning != nil {
+			warningCount++
 		}
 	}
+	summary := doctorSummary(results, ok, warningCount, ciMode)
 
 	if jsonOut {
 		var checksOut []map[string]any
@@ -122,10 +150,10 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 				warns = append(warns, *r.Warning)
 			}
 		}
-		result := map[string]any{"checks": checksOut, "fix": fixResult}
+		result := map[string]any{"checks": checksOut, "fix": fixResult, "summary": summary}
 		env := output.BuildEnvelope(
 			ok, "cojira", "doctor",
-			map[string]any{}, result,
+			map[string]any{"ci": ciMode}, result,
 			warns, errs, "", "", "", nil,
 		)
 		_ = output.PrintJSON(env)
@@ -171,11 +199,40 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			}
 		}
 	}
+	if ciMode {
+		status := "PASS"
+		if !ok {
+			status = "FAIL"
+		}
+		fmt.Printf("doctor %s: %d ok, %d failed, %d warning\n", status, summary["ok_checks"], summary["failed_checks"], summary["warning_checks"])
+	}
 
 	if !ok {
 		return &exitError{Code: 1}
 	}
 	return nil
+}
+
+func doctorSummary(results []CheckResult, ok bool, warningCount int, ciMode bool) map[string]any {
+	failedChecks := 0
+	okChecks := 0
+	for _, result := range results {
+		if result.OK {
+			okChecks++
+		} else {
+			failedChecks++
+		}
+	}
+	return map[string]any{
+		"ready":            ok,
+		"ci":               ciMode,
+		"credential_store": credstore.EffectiveStoreName(),
+		"total_checks":     len(results),
+		"ok_checks":        okChecks,
+		"failed_checks":    failedChecks,
+		"warning_checks":   warningCount,
+		"timestamp":        time.Now().UTC().Format(time.RFC3339),
+	}
 }
 
 // runFix handles the --fix --interactive flow. It prompts for missing env vars
@@ -306,11 +363,39 @@ func appendEnvValues(path string, values map[string]string, existing map[string]
 }
 
 // runDoctorChecks runs connectivity checks for Jira and Confluence.
-func runDoctorChecks(rc cli.RetryConfig) []CheckResult {
+func runDoctorChecks(rc cli.RetryConfig, profileOverrides map[string]string, profileName string) []CheckResult {
 	return []CheckResult{
-		checkJira(rc),
-		checkConfluence(rc),
+		checkCredentialStore(),
+		checkJira(rc, profileOverrides, profileName),
+		checkConfluence(rc, profileOverrides, profileName),
 	}
+}
+
+func checkCredentialStore() CheckResult {
+	store := credstore.ResolveStoreName()
+	effective := credstore.EffectiveStoreName()
+	plainExists, plainPath := credstore.HasPlainCredentials()
+	keyringExists, keyringErr := credstore.KeyringStatus()
+	details := map[string]any{
+		"configured_store":  store,
+		"effective_store":   effective,
+		"plain_path":        plainPath,
+		"plain_exists":      plainExists,
+		"keyring_exists":    keyringExists,
+		"keyring_available": credstore.KeyringAvailable(),
+	}
+	if keyringErr != nil {
+		warning := keyringErr.Error()
+		return CheckResult{OK: true, Name: "credentials", Details: details, Warning: &warning}
+	}
+	return CheckResult{OK: true, Name: "credentials", Details: details}
+}
+
+func envWithProfile(overrides map[string]string, key string) string {
+	if value := strings.TrimSpace(overrides[key]); value != "" {
+		return value
+	}
+	return strings.TrimSpace(os.Getenv(key))
 }
 
 // toBool converts a string env var to boolean (matches Python's _to_bool).
@@ -326,27 +411,30 @@ func toBool(s string, def bool) bool {
 	}
 }
 
-func checkJira(rc cli.RetryConfig) CheckResult {
-	baseURL := strings.TrimSpace(os.Getenv("JIRA_BASE_URL"))
-	token := strings.TrimSpace(os.Getenv("JIRA_API_TOKEN"))
-	email := strings.TrimSpace(os.Getenv("JIRA_EMAIL"))
+func checkJira(rc cli.RetryConfig, profileOverrides map[string]string, profileName string) CheckResult {
+	baseURL := envWithProfile(profileOverrides, "JIRA_BASE_URL")
+	token := envWithProfile(profileOverrides, "JIRA_API_TOKEN")
+	email := envWithProfile(profileOverrides, "JIRA_EMAIL")
 	if dotenv.IsPlaceholder(email, "email") {
 		email = ""
 	}
-	apiVersion := strings.TrimSpace(os.Getenv("JIRA_API_VERSION"))
+	apiVersion := envWithProfile(profileOverrides, "JIRA_API_VERSION")
 	if apiVersion == "" {
 		apiVersion = "2"
 	}
-	authMode := strings.TrimSpace(os.Getenv("JIRA_AUTH_MODE"))
+	authMode := envWithProfile(profileOverrides, "JIRA_AUTH_MODE")
 	apiBaseURL := ""
-	verifySSL := toBool(os.Getenv("JIRA_VERIFY_SSL"), true)
-	userAgent := strings.TrimSpace(os.Getenv("JIRA_USER_AGENT"))
+	verifySSL := toBool(envWithProfile(profileOverrides, "JIRA_VERIFY_SSL"), true)
+	userAgent := envWithProfile(profileOverrides, "JIRA_USER_AGENT")
 	if userAgent == "" {
 		userAgent = "cojira/0.1"
 	}
+	if profileName != "" {
+		userAgent = userAgent + " profile/" + profileName
+	}
 
 	if strings.EqualFold(authMode, "oauth2") {
-		resolved, err := oauth.ResolveAtlassianOAuth2(rc.Context, "jira", baseURL, "JIRA")
+		resolved, err := oauth.ResolveAtlassianOAuth2WithOverrides(rc.Context, "jira", baseURL, "JIRA", profileOverrides)
 		if err != nil {
 			errObj, _ := output.ErrorObj(cerrors.ConfigMissingEnv, err.Error(), cerrors.HintSetup(), "", nil)
 			return CheckResult{
@@ -405,6 +493,8 @@ func checkJira(rc cli.RetryConfig) CheckResult {
 			JitterRatio:       0.1,
 			RespectRetryAfter: true,
 			RetryExceptions:   true,
+			ClientRateLimit:   rc.ClientRateLimit,
+			ClientBurst:       rc.ClientBurst,
 			RetryStatuses:     map[int]bool{429: true, 500: true, 502: true, 503: true, 504: true},
 		},
 		Debug: rc.Debug,
@@ -472,15 +562,23 @@ func jiraErrorResult(err error, baseURL string) CheckResult {
 	}
 }
 
-func checkConfluence(rc cli.RetryConfig) CheckResult {
-	baseURL := strings.TrimSpace(os.Getenv("CONFLUENCE_BASE_URL"))
-	token := strings.TrimSpace(os.Getenv("CONFLUENCE_API_TOKEN"))
-	authMode := strings.TrimSpace(os.Getenv("CONFLUENCE_AUTH_MODE"))
-	apiVersion := strings.TrimSpace(os.Getenv("CONFLUENCE_API_VERSION"))
+func checkConfluence(rc cli.RetryConfig, profileOverrides map[string]string, profileName string) CheckResult {
+	baseURL := envWithProfile(profileOverrides, "CONFLUENCE_BASE_URL")
+	token := envWithProfile(profileOverrides, "CONFLUENCE_API_TOKEN")
+	authMode := envWithProfile(profileOverrides, "CONFLUENCE_AUTH_MODE")
+	apiVersion := envWithProfile(profileOverrides, "CONFLUENCE_API_VERSION")
 	apiBaseURL := ""
+	verifySSL := toBool(envWithProfile(profileOverrides, "CONFLUENCE_VERIFY_SSL"), true)
+	userAgent := envWithProfile(profileOverrides, "CONFLUENCE_USER_AGENT")
+	if userAgent == "" {
+		userAgent = "cojira/0.1"
+	}
+	if profileName != "" {
+		userAgent = userAgent + " profile/" + profileName
+	}
 
 	if strings.EqualFold(authMode, "oauth2") {
-		resolved, err := oauth.ResolveAtlassianOAuth2(rc.Context, "confluence", baseURL, "CONFLUENCE")
+		resolved, err := oauth.ResolveAtlassianOAuth2WithOverrides(rc.Context, "confluence", baseURL, "CONFLUENCE", profileOverrides)
 		if err != nil {
 			errObj, _ := output.ErrorObj(cerrors.ConfigMissingEnv, err.Error(), cerrors.HintSetup(), "", nil)
 			return CheckResult{
@@ -522,6 +620,8 @@ func checkConfluence(rc cli.RetryConfig) CheckResult {
 		APIBaseURL: apiBaseURL,
 		APIVersion: apiVersion,
 		Token:      token,
+		VerifySSL:  verifySSL,
+		UserAgent:  userAgent,
 		Context:    rc.Context,
 		Logger:     logging.NewDebugLogger(rc.Debug, "confluence"),
 		Timeout:    time.Duration(rc.Timeout * float64(time.Second)),
@@ -534,6 +634,8 @@ func checkConfluence(rc cli.RetryConfig) CheckResult {
 			JitterRatio:       0.1,
 			RespectRetryAfter: true,
 			RetryExceptions:   true,
+			ClientRateLimit:   rc.ClientRateLimit,
+			ClientBurst:       rc.ClientBurst,
 			RetryStatuses:     map[int]bool{429: true, 500: true, 502: true, 503: true, 504: true},
 		},
 		Debug: rc.Debug,

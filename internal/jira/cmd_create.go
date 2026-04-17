@@ -76,7 +76,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	payload, err := buildCreatePayload(cmd, file)
+	payload, err := buildCreatePayload(cmd, file, client)
 	if err != nil {
 		return err
 	}
@@ -185,7 +185,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func buildCreatePayload(cmd *cobra.Command, file string) (map[string]any, error) {
+func buildCreatePayload(cmd *cobra.Command, file string, client *Client) (map[string]any, error) {
 	var payload map[string]any
 	var err error
 	if file != "" {
@@ -208,7 +208,7 @@ func buildCreatePayload(cmd *cobra.Command, file string) (map[string]any, error)
 		return nil, err
 	}
 
-	inlineUsed, err := applyCreateFlags(cmd, fields)
+	inlineUsed, err := applyCreateFlags(cmd, fields, client)
 	if err != nil {
 		return nil, err
 	}
@@ -246,6 +246,12 @@ func buildCreatePayload(cmd *cobra.Command, file string) (map[string]any, error)
 		}
 	}
 
+	resolver := newCreateFieldResolver(client, fields)
+	fields, err = resolveFieldMapKeys(fields, resolver)
+	if err != nil {
+		return nil, err
+	}
+
 	payload["fields"] = fields
 	if err := normalizeJiraDescriptionField(fields, descriptionFormatFromCmd(cmd), jiraUsesADF()); err != nil {
 		return nil, err
@@ -258,7 +264,7 @@ func previewCreateFields(cmd *cobra.Command) (map[string]any, error) {
 	if err := applyCreateTemplate(cmd, fields); err != nil {
 		return nil, err
 	}
-	if _, err := applyCreateFlags(cmd, fields); err != nil {
+	if _, err := applyCreateFlags(cmd, fields, nil); err != nil {
 		return nil, err
 	}
 	return fields, nil
@@ -473,7 +479,7 @@ func userFieldValue(raw any) string {
 	return ""
 }
 
-func applyCreateFlags(cmd *cobra.Command, fields map[string]any) (bool, error) {
+func applyCreateFlags(cmd *cobra.Command, fields map[string]any, client *Client) (bool, error) {
 	summaryFlag, _ := cmd.Flags().GetString("summary")
 	projectFlag, _ := cmd.Flags().GetString("project")
 	typeFlag, _ := cmd.Flags().GetString("type")
@@ -561,7 +567,17 @@ func applyCreateFlags(cmd *cobra.Command, fields map[string]any) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if err := applySetOp(field, op, value, fields, mergedFieldState(fields, fields)); err != nil {
+		var entry map[string]any
+		if client != nil {
+			resolver := newCreateFieldResolver(client, fields)
+			resolvedField, resolveErr := resolver.ResolveWithEntry(field)
+			if resolveErr != nil {
+				return false, resolveErr
+			}
+			field = resolvedField.ID
+			entry = resolvedField.Entry
+		}
+		if err := applyResolvedSetOp(field, op, value, entry, fields, mergedFieldState(fields, fields)); err != nil {
 			return false, err
 		}
 		inlineUsed = true

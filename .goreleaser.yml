@@ -14,6 +14,8 @@ builds:
     binary: cojira
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
     goos:
       - linux
       - darwin
@@ -40,6 +42,24 @@ archives:
 
 checksum:
   name_template: 'checksums.txt'
+
+nfpms:
+  - id: linux-packages
+    package_name: cojira
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Arch }}"
+    homepage: https://github.com/notabhay/cojira
+    description: Agent-first Jira and Confluence automation CLI
+    maintainer: notabhay
+    license: MIT
+    bindir: /usr/bin
+    formats:
+      - deb
+      - rpm
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/cojira/README.md
+      - src: COJIRA-BOOTSTRAP.md
+        dst: /usr/share/doc/cojira/COJIRA-BOOTSTRAP.md
 
 dockers:
   - id: linux-amd64

@@ -263,3 +263,46 @@ func TestWriteProjectConfig(t *testing.T) {
 	assert.Contains(t, string(raw), `"default_project": "PROJ"`)
 	assert.True(t, strings.HasSuffix(string(raw), "\n"))
 }
+
+func TestProfileEnvOverridesStructuredAndDirectEnv(t *testing.T) {
+	root := t.TempDir()
+	cfgPath := filepath.Join(root, ConfigFilename)
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`{
+  "default_profile": "work",
+  "profiles": {
+    "work": {
+      "jira": {
+        "base_url": "https://jira.example.com",
+        "api_token": "jira-token",
+        "verify_ssl": false
+      },
+      "confluence": {
+        "base_url": "https://confluence.example.com",
+        "api_token": "conf-token"
+      },
+      "env": {
+        "JIRA_USER_AGENT": "cojira-test"
+      }
+    }
+  }
+}`), 0o644))
+
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(root))
+	defer func() { _ = os.Chdir(origDir) }()
+
+	name, err := ResolveProfileName("")
+	require.NoError(t, err)
+	assert.Equal(t, "work", name)
+
+	overrides, resolvedName, err := ProfileEnvOverrides("")
+	require.NoError(t, err)
+	assert.Equal(t, "work", resolvedName)
+	assert.Equal(t, "https://jira.example.com", overrides["JIRA_BASE_URL"])
+	assert.Equal(t, "jira-token", overrides["JIRA_API_TOKEN"])
+	assert.Equal(t, "false", overrides["JIRA_VERIFY_SSL"])
+	assert.Equal(t, "https://confluence.example.com", overrides["CONFLUENCE_BASE_URL"])
+	assert.Equal(t, "conf-token", overrides["CONFLUENCE_API_TOKEN"])
+	assert.Equal(t, "cojira-test", overrides["JIRA_USER_AGENT"])
+}

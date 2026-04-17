@@ -8,7 +8,16 @@ import (
 
 // JSONDumps serialises data to a pretty-printed JSON string.
 func JSONDumps(data any) (string, error) {
-	b, err := json.MarshalIndent(data, "", "  ")
+	data = ApplySelect(data)
+	var (
+		b   []byte
+		err error
+	)
+	if GetMode() == "ndjson" {
+		b, err = json.Marshal(data)
+	} else {
+		b, err = json.MarshalIndent(data, "", "  ")
+	}
 	if err != nil {
 		return "", err
 	}
@@ -29,19 +38,27 @@ func PrintJSON(data any) error {
 // In JSON mode it writes a JSON object; in human mode a bracket-style line.
 // In summary mode or when quiet is true, nothing is emitted.
 func EmitProgress(mode string, quiet bool, index, total int, message string, status string) {
-	if mode == "summary" {
-		return
-	}
 	if quiet {
 		return
 	}
-	if mode == "json" {
+	EmitEvent("progress", map[string]any{
+		"index":   index,
+		"total":   total,
+		"message": message,
+		"status":  status,
+	})
+	if mode == "summary" {
+		return
+	}
+	if mode == "json" || mode == "ndjson" {
 		payload := map[string]any{
-			"type":    "progress",
-			"index":   index,
-			"total":   total,
-			"message": message,
-			"status":  status,
+			"type":      "progress",
+			"stream_id": CurrentEventStreamID(),
+			"timestamp": UTCNowISO(),
+			"index":     index,
+			"total":     total,
+			"message":   message,
+			"status":    status,
 		}
 		b, _ := json.Marshal(payload)
 		fmt.Fprintln(os.Stderr, string(b))

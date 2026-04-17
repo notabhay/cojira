@@ -106,6 +106,8 @@ func TestWorkspaceAssetsStayInSyncWithRepoDocs(t *testing.T) {
 	claudeRepo, err := os.ReadFile(filepath.Join("..", "..", "CLAUDE.md"))
 	require.NoError(t, err)
 	assert.Equal(t, string(claudeRepo), claudeAsset)
+	assert.Equal(t, agentsAsset, claudeAsset)
+	assert.Equal(t, string(agentsRepo), string(claudeRepo))
 }
 
 func TestReadAssetNotFound(t *testing.T) {

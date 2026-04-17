@@ -89,6 +89,9 @@ Primary commands:
 - `graph`
 - `blocked`
 - `critical-path`
+- `rank`
+- `epic`
+- `backlog`
 - `whoami`
 - `create`
 - `template`
@@ -110,8 +113,17 @@ Primary commands:
 - `report`
 - `query`
 - `poll`
+- `watch`
 - `offline`
 - `batch`
+- `bulk-assign`
+- `bulk-attachment`
+- `bulk-comment`
+- `bulk-delete`
+- `bulk-label`
+- `bulk-link`
+- `bulk-watch`
+- `bulk-worklog`
 - `bulk-update`
 - `bulk-transition`
 - `bulk-update-summaries`
@@ -133,8 +145,14 @@ Primary commands:
 - `restore`
 - `restrictions`
 - `get`
+- `export`
 - `attachment`
 - `comment`
+- `inline-comment`
+- `macros`
+- `page-properties`
+- `templates`
+- `watch`
 - `blog`
 - `find`
 - `spaces`
@@ -159,8 +177,7 @@ Primary commands:
 
 ### Confluence
 
-- templates,
-- PDF or Word export.
+- advanced space permission administration.
 
 ## Identifier shortcuts
 

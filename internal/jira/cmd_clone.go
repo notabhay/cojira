@@ -61,7 +61,7 @@ func runClone(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	payload, summaryText, projectKey, err := buildClonePayload(cmd, sourceIssue)
+	payload, summaryText, projectKey, err := buildClonePayload(cmd, client, sourceIssue)
 	if err != nil {
 		return err
 	}
@@ -149,7 +149,7 @@ func runClone(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func buildClonePayload(cmd *cobra.Command, sourceIssue map[string]any) (map[string]any, string, string, error) {
+func buildClonePayload(cmd *cobra.Command, client *Client, sourceIssue map[string]any) (map[string]any, string, string, error) {
 	fields, _ := sourceIssue["fields"].(map[string]any)
 	if fields == nil {
 		fields = map[string]any{}
@@ -196,7 +196,7 @@ func buildClonePayload(cmd *cobra.Command, sourceIssue map[string]any) (map[stri
 		}
 	}
 
-	if _, err := applyCreateFlags(cmd, payloadFields); err != nil {
+	if _, err := applyCreateFlags(cmd, payloadFields, client); err != nil {
 		return nil, "", "", err
 	}
 

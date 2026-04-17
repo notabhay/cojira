@@ -128,16 +128,23 @@ func runBoardIssues(cmd *cobra.Command, args []string) error {
 			break
 		}
 	}
+	nextStartAt := 0
+	if curStart < total || truncated {
+		nextStartAt = curStart
+	}
 
 	data := map[string]any{
-		"startAt":    startAt,
-		"maxResults": pageSize,
-		"total":      total,
-		"fetched":    len(issues),
-		"all":        fetchAll,
-		"truncated":  truncated,
-		"maxIssues":  maxIssues,
-		"issues":     issues,
+		"startAt":       startAt,
+		"page_size":     pageSize,
+		"maxResults":    pageSize,
+		"total":         total,
+		"count":         len(issues),
+		"fetched":       len(issues),
+		"all":           fetchAll,
+		"truncated":     truncated,
+		"maxIssues":     maxIssues,
+		"next_start_at": nextStartAt,
+		"issues":        issues,
 	}
 
 	if outputFile != "" {

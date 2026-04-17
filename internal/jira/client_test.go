@@ -250,6 +250,42 @@ func TestSearch(t *testing.T) {
 	assert.Equal(t, float64(1), result["total"])
 }
 
+func TestValidateJQL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/jql/parse", r.URL.Path)
+		assert.Equal(t, http.MethodPost, r.Method)
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.Equal(t, []any{"project = PROJ"}, payload["queries"])
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"queries": []map[string]any{{"query": "project = PROJ", "errors": []string{}}},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ValidateJQL("project = PROJ")
+	require.NoError(t, err)
+	queries, _ := result["queries"].([]any)
+	require.Len(t, queries, 1)
+}
+
+func TestGetJQLAutoCompleteData(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/api/2/jql/autocompletedata", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"visibleFieldNames":    []string{"status", "summary"},
+			"visibleFunctionNames": []string{"currentUser()"},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetJQLAutoCompleteData()
+	require.NoError(t, err)
+	assert.NotNil(t, result["visibleFieldNames"])
+}
+
 func TestListDashboards(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/rest/api/2/dashboard", r.URL.Path)
@@ -830,6 +866,147 @@ func TestAddIssuesToSprint(t *testing.T) {
 	require.NoError(t, c.AddIssuesToSprint("99", []string{"PROJ-1", "PROJ-2"}))
 }
 
+func TestGetBacklogIssues(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/agile/1.0/board/45434/backlog", r.URL.Path)
+		assert.Equal(t, "summary,status", r.URL.Query().Get("fields"))
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total":  1,
+			"issues": []map[string]any{{"key": "PROJ-1"}},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetBacklogIssues("45434", "", 20, 0, "summary,status", "")
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), result["total"])
+}
+
+func TestRankIssues(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PUT", r.Method)
+		assert.Equal(t, "/rest/agile/1.0/issue/rank", r.URL.Path)
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.Equal(t, "PROJ-9", payload["rankAfterIssue"])
+		assert.Equal(t, float64(12345), payload["rankCustomFieldId"])
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.RankIssues([]string{"PROJ-1"}, "", "PROJ-9", 12345))
+}
+
+func TestMoveIssuesToBoard(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/agile/1.0/board/45434/issue", r.URL.Path)
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.Equal(t, "PROJ-9", payload["rankBeforeIssue"])
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.MoveIssuesToBoard("45434", []string{"PROJ-1"}, "PROJ-9", "", 0))
+}
+
+func TestMoveIssuesToBacklog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/agile/1.0/backlog/issue", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.MoveIssuesToBacklog([]string{"PROJ-1", "PROJ-2"}))
+}
+
+func TestMoveIssuesToBacklogForBoard(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/agile/1.0/backlog/45434/issue", r.URL.Path)
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		assert.Equal(t, "PROJ-9", payload["rankAfterIssue"])
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.MoveIssuesToBacklogForBoard("45434", []string{"PROJ-1"}, "", "PROJ-9", 0))
+}
+
+func TestListCustomerRequests(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/servicedeskapi/request", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"values": []map[string]any{{"issueKey": "RAPTOR-1"}}})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.ListCustomerRequests(25, 0)
+	require.NoError(t, err)
+	assert.NotNil(t, result["values"])
+}
+
+func TestGetCustomerRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/servicedeskapi/request/RAPTOR-1", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{"issueKey": "RAPTOR-1"})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetCustomerRequest("RAPTOR-1")
+	require.NoError(t, err)
+	assert.Equal(t, "RAPTOR-1", result["issueKey"])
+}
+
+func TestGetEpicIssues(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/rest/agile/1.0/epic/RAPTOR-1/issue", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total":  1,
+			"issues": []map[string]any{{"key": "PROJ-2"}},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.GetEpicIssues("RAPTOR-1", "", 20, 0, "summary", "")
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), result["total"])
+}
+
+func TestMoveIssuesToEpic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/agile/1.0/epic/RAPTOR-1/issue", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.MoveIssuesToEpic("RAPTOR-1", []string{"PROJ-1"}))
+}
+
+func TestRemoveIssuesFromEpic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/agile/1.0/epic/none/issue", r.URL.Path)
+		w.WriteHeader(204)
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	require.NoError(t, c.RemoveIssuesFromEpic([]string{"PROJ-1"}))
+}
+
 func TestUploadAttachment(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
@@ -851,6 +1028,25 @@ func TestUploadAttachment(t *testing.T) {
 	result, err := c.UploadAttachment("PROJ-123", path)
 	require.NoError(t, err)
 	assert.Equal(t, "55", result["id"])
+}
+
+func TestUploadAttachmentBytes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/rest/api/2/issue/PROJ-123/attachments", r.URL.Path)
+		assert.Equal(t, "no-check", r.Header.Get("X-Atlassian-Token"))
+		assert.Contains(t, r.Header.Get("Content-Type"), "multipart/form-data")
+		w.WriteHeader(200)
+		_ = json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "77", "filename": "stdin.txt"},
+		})
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	result, err := c.UploadAttachmentBytes("PROJ-123", "stdin.txt", []byte("hello"))
+	require.NoError(t, err)
+	assert.Equal(t, "77", result["id"])
 }
 
 func TestDeleteAttachment(t *testing.T) {
@@ -877,6 +1073,19 @@ func TestDownloadAttachment(t *testing.T) {
 	require.NoError(t, c.DownloadAttachment(server.URL+"/files/sample.txt", outPath))
 
 	data, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(data))
+}
+
+func TestDownloadAttachmentContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/files/sample.txt", r.URL.Path)
+		_, _ = io.WriteString(w, "hello")
+	}))
+	defer server.Close()
+
+	c := testClient(t, server)
+	data, err := c.DownloadAttachmentContent(server.URL + "/files/sample.txt")
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(data))
 }
