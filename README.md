@@ -447,7 +447,7 @@ The repo also includes publication scaffolding for ecosystems that still require
 Example:
 
 ```bash
-./scripts/render_release_manifests.sh --version v0.3.0 --windows-amd64-sha256 <sha256>
+./scripts/render_release_manifests.sh --version v0.4.2 --windows-amd64-sha256 <sha256>
 ```
 
 That generates ready-to-review manifests under `packaging/generated/<version>/`. Publishing them to a real Homebrew tap, Winget, Scoop bucket, or Chocolatey feed is still an external release step.

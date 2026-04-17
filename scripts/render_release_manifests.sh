@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  ./scripts/render_release_manifests.sh --version v0.3.0 --windows-amd64-sha256 <sha256> [--repo owner/name] [--output-dir path]
+  ./scripts/render_release_manifests.sh --version v0.4.2 --windows-amd64-sha256 <sha256> [--repo owner/name] [--output-dir path]
 
 Renders Winget, Scoop, and Chocolatey release manifests from the templates in packaging/.
 EOF

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_VERSION="v0.3.0"
+DEFAULT_VERSION="v0.4.2"
 DEFAULT_GITHUB_REPO="notabhay/cojira"
 
 DEFAULT_GO_VERSION="1.22.0"

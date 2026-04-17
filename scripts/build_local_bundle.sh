@@ -33,7 +33,7 @@ sha256_cmd() {
   exit 1
 }
 
-VERSION="${1:-$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo "v0.3.0")}"
+VERSION="${1:-$(git -C "$REPO_ROOT" describe --tags --always --dirty 2>/dev/null || echo "v0.4.2")}"
 OS_NAME="${2:-$(detect_os)}"
 ARCH_NAME="${3:-$(detect_arch)}"
 

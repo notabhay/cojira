@@ -12,7 +12,7 @@ Currently included:
 Render release-specific manifests with:
 
 ```bash
-./scripts/render_release_manifests.sh --version v0.3.0 --windows-amd64-sha256 <sha256>
+./scripts/render_release_manifests.sh --version v0.4.2 --windows-amd64-sha256 <sha256>
 ```
 
 That writes ready-to-review files under `packaging/generated/<version>/`.

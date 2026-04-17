@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
   [string]$InstallDir = $(if ($env:COJIRA_INSTALL_DIR) { $env:COJIRA_INSTALL_DIR } elseif ($env:GOBIN) { $env:GOBIN } else { Join-Path $HOME ".local\bin" }),
-  [string]$Version = $(if ($env:COJIRA_VERSION) { $env:COJIRA_VERSION } else { "v0.3.0" }),
+  [string]$Version = $(if ($env:COJIRA_VERSION) { $env:COJIRA_VERSION } else { "v0.4.2" }),
   [string]$DefaultConfluenceBaseUrl = $(if ($env:COJIRA_DEFAULT_CONFLUENCE_BASE_URL) { $env:COJIRA_DEFAULT_CONFLUENCE_BASE_URL } else { "https://confluence.example.com/confluence/" }),
   [string]$DefaultJiraBaseUrl = $(if ($env:COJIRA_DEFAULT_JIRA_BASE_URL) { $env:COJIRA_DEFAULT_JIRA_BASE_URL } else { "https://jira.example.com" })
 )
